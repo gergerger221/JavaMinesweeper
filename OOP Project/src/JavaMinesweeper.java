@@ -8,6 +8,10 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import database.DatabaseManager;
+import database.Highscore;
+import ui.HighscoresPanel;
+import ui.IconManager;
 
 public class JavaMinesweeper extends JFrame {
 
@@ -174,6 +178,7 @@ public class JavaMinesweeper extends JFrame {
     private JPanel creditsPanel;
     private JPanel difficultyPanel;
     private JPanel gamePanel;
+    private HighscoresPanel highscoresPanel;
 
     private boolean firstMove;
     private boolean gameActive;
@@ -205,11 +210,13 @@ public class JavaMinesweeper extends JFrame {
         buildCreditsUI();
         buildDifficultyUI();
         buildGameUI();
+        buildHighscoresUI();
 
         cardPanel.add(menuPanel, "MENU");
         cardPanel.add(creditsPanel, "CREDITS");
         cardPanel.add(difficultyPanel, "DIFFICULTY");
         cardPanel.add(gamePanel, "GAME");
+        cardPanel.add(highscoresPanel, "HIGHSCORES");
 
         setLocationRelativeTo(null);
         showMenu();
@@ -227,6 +234,10 @@ public class JavaMinesweeper extends JFrame {
         JButton playButton = new JButton("Play");
         applyPrimaryButtonStyle(playButton, 16);
         playButton.addActionListener(e -> showDifficulty());
+
+        JButton highscoresButton = new JButton("Highscores");
+        applyPrimaryButtonStyle(highscoresButton, 16);
+        highscoresButton.addActionListener(e -> showHighscores());
 
         JLabel creditsLink = new JLabel("Credits");
         creditsLink.setFont(new Font("Segoe UI", Font.PLAIN, 14));
@@ -264,6 +275,10 @@ public class JavaMinesweeper extends JFrame {
         menuPanel.add(playButton, gbc);
 
         gbc.gridy = 2;
+        gbc.insets = new Insets(0, 0, 10, 0);
+        menuPanel.add(highscoresButton, gbc);
+
+        gbc.gridy = 3;
         gbc.insets = new Insets(0, 0, 0, 0);
         menuPanel.add(creditsLink, gbc);
     }
@@ -275,12 +290,12 @@ public class JavaMinesweeper extends JFrame {
         title.setFont(new Font("Segoe UI", Font.BOLD, 32));
         title.setForeground(new Color(15, 23, 42));
 
-        JLabel group = new JLabel("Group: Placeholder Group Name");
+        JLabel group = new JLabel("Group: JerjerKings");
         group.setFont(new Font("Segoe UI", Font.PLAIN, 16));
         group.setForeground(new Color(15, 23, 42));
 
         JLabel members = new JLabel(
-                "<html>Members:<br>1) Joven Sanchez<br>2) Andrew Llaneta<br>3) Terd Sionzon<br>4) Christiano Ronaldo</html>");
+                "<html>Members:<br>1) Joven Sanchez<br>2) Andrew Llaneta<br>3) Terd Sionzon<br>4) John Mark ChrizTiano Ronaldo Realonda y Alonso Darren Espanto Molester Alonte </html>");
         members.setFont(new Font("Segoe UI", Font.PLAIN, 16));
         members.setForeground(new Color(15, 23, 42));
 
@@ -480,6 +495,10 @@ public class JavaMinesweeper extends JFrame {
         difficultyPanel.add(backButton, gbc);
     }
 
+    private void buildHighscoresUI() {
+        highscoresPanel = new HighscoresPanel(cardLayout, cardPanel);
+    }
+
     private void buildGameUI() {
         gamePanel = new MinePatternPanel(new BorderLayout());
 
@@ -617,6 +636,37 @@ public class JavaMinesweeper extends JFrame {
 
     private void showDifficulty() {
         cardLayout.show(cardPanel, "DIFFICULTY");
+    }
+
+    private void showHighscores() {
+        cardLayout.show(cardPanel, "HIGHSCORES");
+    }
+
+    private String getPlayerName() {
+        String playerName = JOptionPane.showInputDialog(
+            this,
+            "Congratulations! You've achieved a highscore!\n\nEnter your name:",
+            "Highscore Achievement",
+            JOptionPane.PLAIN_MESSAGE
+        );
+        
+        // Validate input
+        if (playerName == null) {
+            return null; // User cancelled
+        }
+        
+        playerName = playerName.trim();
+        if (playerName.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "Please enter a valid name.", "Invalid Name", JOptionPane.WARNING_MESSAGE);
+            return getPlayerName(); // Ask again
+        }
+        
+        if (playerName.length() > 20) {
+            JOptionPane.showMessageDialog(this, "Name must be 20 characters or less.", "Name Too Long", JOptionPane.WARNING_MESSAGE);
+            return getPlayerName(); // Ask again
+        }
+        
+        return playerName;
     }
 
     private void startNewGame(int newSize, int newMinesCount) {
@@ -882,7 +932,35 @@ public class JavaMinesweeper extends JFrame {
         String message;
         if (win) {
             long elapsed = (runStartMs == 0L) ? 0L : (System.currentTimeMillis() - runStartMs);
-            message = "You Win!\nTime: " + formatDuration(elapsed);
+            long timeSeconds = elapsed / 1000;
+            
+            System.out.println("DEBUG: Game won - Time: " + timeSeconds + "s, Difficulty: '" + currentDifficulty + "'");
+            
+            // Check if this qualifies as a highscore
+            DatabaseManager dbManager = DatabaseManager.getInstance();
+            boolean qualifies = dbManager.isHighscore(currentDifficulty, timeSeconds, 10);
+            System.out.println("DEBUG: Highscore qualification: " + qualifies);
+            
+            if (qualifies) {
+                String playerName = getPlayerName();
+                System.out.println("DEBUG: Player name entered: '" + playerName + "'");
+                if (playerName != null && !playerName.trim().isEmpty()) {
+                    Highscore highscore = new Highscore(playerName.trim(), currentDifficulty, timeSeconds);
+                    boolean saved = dbManager.saveHighscore(highscore);
+                    System.out.println("DEBUG: Highscore saved: " + saved);
+                    
+                    // Refresh the highscores panel to show the new highscore immediately
+                    if (highscoresPanel != null) {
+                        highscoresPanel.refreshHighscores();
+                    }
+                    
+                    message = "Congratulations! New Highscore!\nPlayer: " + playerName + "\nTime: " + formatDuration(elapsed);
+                } else {
+                    message = "You Win!\nTime: " + formatDuration(elapsed);
+                }
+            } else {
+                message = "You Win!\nTime: " + formatDuration(elapsed);
+            }
         } else {
             message = "Game Over!";
         }
