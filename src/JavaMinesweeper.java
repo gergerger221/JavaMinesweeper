@@ -383,8 +383,16 @@ class JavaMinesweeper extends JFrame {
     private JLabel statusLabel;
     private JLabel timerLabel;
     private JLabel livesLabel;
-    private JButton menuButton;
-    private JButton retryButton;
+    private JButton settingsButton;
+    private JPanel settingsGlassPane;
+    private JPanel endGameGlassPane;
+    private JPanel confirmGlassPane;
+    private boolean endGameOverlayHidden;
+    private boolean lastEndGameWin;
+    private String lastEndGameMessage;
+    private AWTEventListener endGameRestoreListener;
+    private boolean gamePaused;
+    private long pauseStartMs = 0L;
     private JPanel boardContainer;
     private JPanel boardPanel;
 
@@ -396,7 +404,13 @@ class JavaMinesweeper extends JFrame {
     private JPanel creditsPanel;
     private JPanel gamePanel;
     private JPanel setupPanel;
+    private JPanel loginPanel;
+    private JPanel createAccountPanel;
     private HighscoresPanel highscoresPanel;
+
+    private Integer currentUserId;
+    private String currentUsername;
+    private boolean guestMode;
 
     private boolean firstMove;
     private boolean gameActive;
@@ -431,6 +445,8 @@ class JavaMinesweeper extends JFrame {
         buildCreditsUI();
         buildSetupUI();
         buildGameUI();
+        buildLoginUI();
+        buildCreateAccountUI();
         buildHighscoresUI();
 
         cardPanel.add(menuPanel, "MENU");
@@ -438,11 +454,213 @@ class JavaMinesweeper extends JFrame {
         cardPanel.add(setupPanel, "SETUP");
         cardPanel.add(gamePanel, "GAME");
         cardPanel.add(highscoresPanel, "HIGHSCORES");
+        cardPanel.add(loginPanel, "LOGIN");
+        cardPanel.add(createAccountPanel, "CREATE_ACCOUNT");
 
         setLocationRelativeTo(null);
-        showMenu();
+        showLogin();
         setExtendedState(JFrame.MAXIMIZED_BOTH);
         setVisible(true);
+    }
+
+    private void buildLoginUI() {
+        loginPanel = new MinePatternPanel(new GridBagLayout());
+
+        JLabel title = new JLabel("Login");
+        title.setFont(UiTheme.fontMenuTitle());
+        title.setForeground(new Color(15, 23, 42));
+
+        JTextField usernameField = new JTextField();
+        usernameField.setPreferredSize(UiTheme.scaledDimension(260, 42));
+
+        JPasswordField passwordField = new JPasswordField();
+        passwordField.setPreferredSize(UiTheme.scaledDimension(260, 42));
+
+        JButton loginBtn = new JButton("Confirm");
+        applyPrimaryButtonStyle(loginBtn, UiTheme.scale(16));
+        loginBtn.addActionListener(e -> {
+            String u = usernameField.getText();
+            String p = new String(passwordField.getPassword());
+            DatabaseManager db = DatabaseManager.getInstance();
+            Integer userId = db.authenticateUser(u, p);
+            if (userId == null) {
+                String err = db.getLastErrorMessage();
+                String msg = (err == null || err.isBlank()) ? "Invalid username or password."
+                        : ("Login failed: " + err);
+                JOptionPane.showMessageDialog(this, msg, "Login Failed", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            currentUserId = userId;
+            currentUsername = db.getUsernameById(userId.intValue());
+            guestMode = false;
+            showMenu();
+        });
+
+        JButton guestBtn = new JButton("Play as Guest");
+        applyPrimaryButtonStyle(guestBtn, UiTheme.scale(16));
+        guestBtn.addActionListener(e -> {
+            currentUserId = null;
+            currentUsername = "Guest";
+            guestMode = true;
+            showMenu();
+        });
+
+        JLabel createLink = new JLabel("Create account");
+        createLink.setFont(UiTheme.fontCreditsLink());
+        Color linkDefault = new Color(71, 85, 105);
+        Color linkHover = new Color(30, 41, 59);
+        createLink.setForeground(linkDefault);
+        createLink.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        createLink.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                showCreateAccount();
+            }
+
+            @Override
+            public void mouseEntered(MouseEvent e) {
+                createLink.setText("<html><u>Create account</u></html>");
+                createLink.setForeground(linkHover);
+            }
+
+            @Override
+            public void mouseExited(MouseEvent e) {
+                createLink.setText("Create account");
+                createLink.setForeground(linkDefault);
+            }
+        });
+
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        gbc.insets = UiTheme.scaledInsets(0, 0, 18, 0);
+        loginPanel.add(title, gbc);
+
+        gbc.gridy = 1;
+        gbc.insets = UiTheme.scaledInsets(0, 0, 8, 0);
+        loginPanel.add(new JLabel("Username"), gbc);
+
+        gbc.gridy = 2;
+        gbc.insets = UiTheme.scaledInsets(0, 0, 12, 0);
+        loginPanel.add(usernameField, gbc);
+
+        gbc.gridy = 3;
+        gbc.insets = UiTheme.scaledInsets(0, 0, 8, 0);
+        loginPanel.add(new JLabel("Password"), gbc);
+
+        gbc.gridy = 4;
+        gbc.insets = UiTheme.scaledInsets(0, 0, 14, 0);
+        loginPanel.add(passwordField, gbc);
+
+        gbc.gridy = 5;
+        gbc.insets = UiTheme.scaledInsets(0, 0, 10, 0);
+        loginPanel.add(loginBtn, gbc);
+
+        gbc.gridy = 6;
+        gbc.insets = UiTheme.scaledInsets(0, 0, 10, 0);
+        loginPanel.add(guestBtn, gbc);
+
+        gbc.gridy = 7;
+        gbc.insets = UiTheme.scaledInsets(0, 0, 0, 0);
+        loginPanel.add(createLink, gbc);
+    }
+
+    private void buildCreateAccountUI() {
+        createAccountPanel = new MinePatternPanel(new GridBagLayout());
+
+        JLabel title = new JLabel("Create Account");
+        title.setFont(UiTheme.fontMenuTitle());
+        title.setForeground(new Color(15, 23, 42));
+
+        JTextField usernameField = new JTextField();
+        usernameField.setPreferredSize(UiTheme.scaledDimension(260, 42));
+
+        JPasswordField passwordField = new JPasswordField();
+        passwordField.setPreferredSize(UiTheme.scaledDimension(260, 42));
+
+        JPasswordField rePasswordField = new JPasswordField();
+        rePasswordField.setPreferredSize(UiTheme.scaledDimension(260, 42));
+
+        JButton createBtn = new JButton("Confirm");
+        applyPrimaryButtonStyle(createBtn, UiTheme.scale(16));
+        createBtn.addActionListener(e -> {
+            String u = usernameField.getText();
+            String p1 = new String(passwordField.getPassword());
+            String p2 = new String(rePasswordField.getPassword());
+            if (u == null || u.isBlank() || p1.isBlank()) {
+                JOptionPane.showMessageDialog(this, "Please enter a username and password.", "Invalid",
+                        JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            if (!p1.equals(p2)) {
+                JOptionPane.showMessageDialog(this, "Passwords do not match.", "Invalid",
+                        JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            DatabaseManager db = DatabaseManager.getInstance();
+            boolean ok = db.createUser(u.trim(), p1);
+            if (!ok) {
+                String err = db.getLastErrorMessage();
+                String msg = (err == null || err.isBlank())
+                        ? "Could not create account. Username may already exist."
+                        : ("Could not create account: " + err);
+                JOptionPane.showMessageDialog(this, msg, "Create Account Failed", JOptionPane.WARNING_MESSAGE);
+                return;
+            }
+            JOptionPane.showMessageDialog(this, "Account created. Please login.", "Success",
+                    JOptionPane.INFORMATION_MESSAGE);
+            showLogin();
+        });
+
+        JButton backBtn = new JButton("Back");
+        applyPrimaryButtonStyle(backBtn, UiTheme.scale(16));
+        backBtn.addActionListener(e -> showLogin());
+
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.gridx = 0;
+        gbc.gridy = 0;
+        gbc.insets = UiTheme.scaledInsets(0, 0, 18, 0);
+        createAccountPanel.add(title, gbc);
+
+        gbc.gridy = 1;
+        gbc.insets = UiTheme.scaledInsets(0, 0, 8, 0);
+        createAccountPanel.add(new JLabel("Username"), gbc);
+
+        gbc.gridy = 2;
+        gbc.insets = UiTheme.scaledInsets(0, 0, 12, 0);
+        createAccountPanel.add(usernameField, gbc);
+
+        gbc.gridy = 3;
+        gbc.insets = UiTheme.scaledInsets(0, 0, 8, 0);
+        createAccountPanel.add(new JLabel("Password"), gbc);
+
+        gbc.gridy = 4;
+        gbc.insets = UiTheme.scaledInsets(0, 0, 12, 0);
+        createAccountPanel.add(passwordField, gbc);
+
+        gbc.gridy = 5;
+        gbc.insets = UiTheme.scaledInsets(0, 0, 8, 0);
+        createAccountPanel.add(new JLabel("Re-enter Password"), gbc);
+
+        gbc.gridy = 6;
+        gbc.insets = UiTheme.scaledInsets(0, 0, 14, 0);
+        createAccountPanel.add(rePasswordField, gbc);
+
+        gbc.gridy = 7;
+        gbc.insets = UiTheme.scaledInsets(0, 0, 10, 0);
+        createAccountPanel.add(createBtn, gbc);
+
+        gbc.gridy = 8;
+        gbc.insets = UiTheme.scaledInsets(0, 0, 0, 0);
+        createAccountPanel.add(backBtn, gbc);
+    }
+
+    private void showLogin() {
+        cardLayout.show(cardPanel, "LOGIN");
+    }
+
+    private void showCreateAccount() {
+        cardLayout.show(cardPanel, "CREATE_ACCOUNT");
     }
 
     private void buildMenuUI() {
@@ -867,22 +1085,25 @@ class JavaMinesweeper extends JFrame {
 
         // Load and scale icons for buttons - larger size for better visibility
         int iconSize = UiTheme.scale(28);
-        ImageIcon homeIcon = new ImageIcon(
-                iconManager.getHomeImage().getScaledInstance(iconSize, iconSize, Image.SCALE_SMOOTH));
-        ImageIcon retryIcon = new ImageIcon(
-                iconManager.getRetryImage().getScaledInstance(iconSize, iconSize, Image.SCALE_SMOOTH));
+        ImageIcon settingIcon = null;
+        Image settingImg = iconManager.getSettingImage();
+        if (settingImg != null) {
+            settingIcon = new ImageIcon(settingImg.getScaledInstance(iconSize, iconSize, Image.SCALE_SMOOTH));
+        }
 
-        menuButton = new JButton(homeIcon);
-        menuButton.setToolTipText("Menu");
-        applyIconButtonStyle(menuButton);
-        menuButton.addActionListener(e -> showMenu());
-        actionsPanel.add(menuButton);
-
-        retryButton = new JButton(retryIcon);
-        retryButton.setToolTipText("Retry");
-        applyIconButtonStyle(retryButton);
-        retryButton.addActionListener(e -> resetGame());
-        actionsPanel.add(retryButton);
+        settingsButton = (settingIcon != null) ? new JButton(settingIcon) : new JButton("Settings");
+        settingsButton.setToolTipText("Settings");
+        applyIconButtonStyle(settingsButton);
+        settingsButton.addActionListener(e -> {
+            if (!gameActive) {
+                if (endGameOverlayHidden) {
+                    showEndGameOverlay(lastEndGameWin, lastEndGameMessage);
+                }
+                return;
+            }
+            toggleSettingsOverlay();
+        });
+        actionsPanel.add(settingsButton);
 
         topPanel.add(actionsPanel, BorderLayout.EAST);
         gamePanel.add(topPanel, BorderLayout.NORTH);
@@ -909,6 +1130,381 @@ class JavaMinesweeper extends JFrame {
 
         boardContainer.add(boardPanel);
         gamePanel.add(boardContainer, BorderLayout.CENTER);
+
+        buildSettingsOverlay();
+    }
+
+    private void installEndGameRestoreListener() {
+        if (endGameRestoreListener != null)
+            return;
+        endGameRestoreListener = new AWTEventListener() {
+            @Override
+            public void eventDispatched(AWTEvent event) {
+                if (!endGameOverlayHidden)
+                    return;
+                if (!(event instanceof MouseEvent))
+                    return;
+                MouseEvent me = (MouseEvent) event;
+                if (me.getID() != MouseEvent.MOUSE_PRESSED)
+                    return;
+
+                // Restore the exact same overlay contents.
+                showEndGameOverlay(lastEndGameWin, lastEndGameMessage);
+            }
+        };
+        Toolkit.getDefaultToolkit().addAWTEventListener(endGameRestoreListener, AWTEvent.MOUSE_EVENT_MASK);
+    }
+
+    private void uninstallEndGameRestoreListener() {
+        if (endGameRestoreListener == null)
+            return;
+        Toolkit.getDefaultToolkit().removeAWTEventListener(endGameRestoreListener);
+        endGameRestoreListener = null;
+    }
+
+    private void buildSettingsOverlay() {
+        settingsGlassPane = new JPanel(new GridBagLayout()) {
+            @Override
+            protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setColor(new Color(0, 0, 0, 140));
+                g2.fillRect(0, 0, getWidth(), getHeight());
+                g2.dispose();
+                super.paintComponent(g);
+            }
+        };
+        settingsGlassPane.setOpaque(false);
+
+        JPanel card = new JPanel();
+        card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
+        card.setBackground(UiTheme.DARK_HEADER_BG);
+        card.setBorder(new EmptyBorder(UiTheme.scale(18), UiTheme.scale(22), UiTheme.scale(18), UiTheme.scale(22)));
+
+        JLabel titleLabel = new JLabel("Settings");
+        titleLabel.setFont(UiTheme.scaledFont(Font.BOLD, 22));
+        titleLabel.setForeground(UiTheme.DARK_HEADER_FG);
+        titleLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+
+        JButton resume = new JButton("Resume");
+        applyPrimaryButtonStyle(resume, UiTheme.scale(16));
+        resume.setAlignmentX(Component.CENTER_ALIGNMENT);
+        resume.addActionListener(e -> hideSettingsOverlay());
+
+        JButton retry = new JButton("Retry");
+        applyPrimaryButtonStyle(retry, UiTheme.scale(16));
+        retry.setAlignmentX(Component.CENTER_ALIGNMENT);
+        retry.addActionListener(e -> {
+            showConfirmationOverlay(
+                    "Confirm Retry",
+                    "Are you sure you want to restart the game?\nYour current progress will be lost.",
+                    () -> {
+                        hideSettingsOverlay();
+                        resetGame();
+                    },
+                    () -> {
+                    } // Cancel - do nothing, just hide confirmation
+            );
+        });
+
+        JButton quit = new JButton("Quit");
+        applyPrimaryButtonStyle(quit, UiTheme.scale(16));
+        quit.setAlignmentX(Component.CENTER_ALIGNMENT);
+        quit.addActionListener(e -> {
+            showConfirmationOverlay(
+                    "Confirm Quit",
+                    "Are you sure you want to quit to the main menu?\nYour current progress will be lost.",
+                    () -> {
+                        hideSettingsOverlay();
+                        showMenu();
+                    },
+                    () -> {
+                    } // Cancel - do nothing, just hide confirmation
+            );
+        });
+
+        Dimension btnSize = UiTheme.scaledDimension(220, 48);
+        resume.setPreferredSize(btnSize);
+        resume.setMaximumSize(btnSize);
+        retry.setPreferredSize(btnSize);
+        retry.setMaximumSize(btnSize);
+        quit.setPreferredSize(btnSize);
+        quit.setMaximumSize(btnSize);
+
+        card.add(titleLabel);
+        card.add(Box.createVerticalStrut(UiTheme.scale(14)));
+        card.add(resume);
+        card.add(Box.createVerticalStrut(UiTheme.scale(10)));
+        card.add(retry);
+        card.add(Box.createVerticalStrut(UiTheme.scale(10)));
+        card.add(quit);
+
+        settingsGlassPane.add(card, new GridBagConstraints());
+        settingsGlassPane.setVisible(false);
+        setGlassPane(settingsGlassPane);
+
+        addComponentListener(new ComponentAdapter() {
+            @Override
+            public void componentResized(ComponentEvent e) {
+                if (settingsGlassPane != null) {
+                    settingsGlassPane.revalidate();
+                    settingsGlassPane.repaint();
+                }
+            }
+        });
+    }
+
+    private void buildEndGameOverlay() {
+        endGameGlassPane = new JPanel(new GridBagLayout()) {
+            @Override
+            protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setColor(new Color(0, 0, 0, 160));
+                g2.fillRect(0, 0, getWidth(), getHeight());
+                g2.dispose();
+                super.paintComponent(g);
+            }
+        };
+        endGameGlassPane.setOpaque(false);
+        endGameGlassPane.setVisible(false);
+    }
+
+    private void showEndGameOverlay(boolean win, String message) {
+        if (endGameGlassPane == null) {
+            buildEndGameOverlay();
+        }
+
+        lastEndGameWin = win;
+        lastEndGameMessage = message;
+        endGameOverlayHidden = false;
+        uninstallEndGameRestoreListener();
+
+        endGameGlassPane.removeAll();
+
+        JPanel card = new JPanel();
+        card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
+        card.setBackground(UiTheme.DARK_HEADER_BG);
+        card.setBorder(new EmptyBorder(UiTheme.scale(18), UiTheme.scale(22), UiTheme.scale(18), UiTheme.scale(22)));
+
+        JLabel titleLabel = new JLabel(win ? "You Win!" : "Game Over");
+        titleLabel.setFont(UiTheme.scaledFont(Font.BOLD, 26));
+        titleLabel.setForeground(win ? new Color(34, 197, 94) : new Color(244, 63, 94));
+        titleLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        titleLabel.setHorizontalAlignment(SwingConstants.CENTER);
+        titleLabel.setMaximumSize(new Dimension(Integer.MAX_VALUE, titleLabel.getPreferredSize().height));
+
+        JLabel msgLabel = new JLabel("<html><div style='text-align:center;'>" + message.replace("\n", "<br>")
+                + "</div></html>");
+        msgLabel.setFont(UiTheme.scaledFont(Font.PLAIN, 16));
+        msgLabel.setForeground(UiTheme.DARK_HEADER_FG);
+        msgLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        msgLabel.setHorizontalAlignment(SwingConstants.CENTER);
+        msgLabel.setMaximumSize(new Dimension(Integer.MAX_VALUE, msgLabel.getPreferredSize().height));
+
+        JButton viewBoard = new JButton("View Board");
+        applyPrimaryButtonStyle(viewBoard, UiTheme.scale(16));
+        viewBoard.setAlignmentX(Component.CENTER_ALIGNMENT);
+        viewBoard.addActionListener(e -> hideEndGameOverlayForViewing());
+
+        JButton retry = new JButton("Retry");
+        applyPrimaryButtonStyle(retry, UiTheme.scale(16));
+        retry.setAlignmentX(Component.CENTER_ALIGNMENT);
+        retry.addActionListener(e -> {
+            hideEndGameOverlay(true);
+            resetGame();
+        });
+
+        JButton quit = new JButton("Quit");
+        applyPrimaryButtonStyle(quit, UiTheme.scale(16));
+        quit.setAlignmentX(Component.CENTER_ALIGNMENT);
+        quit.addActionListener(e -> {
+            hideEndGameOverlay(true);
+            showMenu();
+        });
+
+        Dimension btnSize = UiTheme.scaledDimension(220, 48);
+        viewBoard.setPreferredSize(btnSize);
+        viewBoard.setMaximumSize(btnSize);
+        retry.setPreferredSize(btnSize);
+        retry.setMaximumSize(btnSize);
+        quit.setPreferredSize(btnSize);
+        quit.setMaximumSize(btnSize);
+
+        card.add(titleLabel);
+        card.add(Box.createVerticalStrut(UiTheme.scale(10)));
+        card.add(msgLabel);
+        card.add(Box.createVerticalStrut(UiTheme.scale(16)));
+        card.add(viewBoard);
+        card.add(Box.createVerticalStrut(UiTheme.scale(10)));
+        card.add(retry);
+        card.add(Box.createVerticalStrut(UiTheme.scale(10)));
+        card.add(quit);
+
+        endGameGlassPane.add(card, new GridBagConstraints());
+
+        setGamePaused(true);
+        setGlassPane(endGameGlassPane);
+        endGameGlassPane.setVisible(true);
+        endGameGlassPane.revalidate();
+        endGameGlassPane.repaint();
+    }
+
+    private void hideEndGameOverlayForViewing() {
+        endGameOverlayHidden = true;
+        if (endGameGlassPane != null) {
+            endGameGlassPane.setVisible(false);
+        }
+        if (settingsGlassPane != null) {
+            setGlassPane(settingsGlassPane);
+        }
+        // Keep paused/locked since the game is over.
+        setGamePaused(true);
+        installEndGameRestoreListener();
+    }
+
+    private void hideEndGameOverlay(boolean leavingGameEndState) {
+        endGameOverlayHidden = false;
+        if (endGameGlassPane != null) {
+            endGameGlassPane.setVisible(false);
+        }
+        if (settingsGlassPane != null) {
+            setGlassPane(settingsGlassPane);
+        }
+
+        uninstallEndGameRestoreListener();
+
+        // Only unpause if we are actually leaving the end-game state (Retry/Quit)
+        if (leavingGameEndState) {
+            setGamePaused(false);
+        } else {
+            setGamePaused(true);
+        }
+    }
+
+    private void showConfirmationOverlay(String title, String message, Runnable onConfirm, Runnable onCancel) {
+        if (confirmGlassPane == null) {
+            confirmGlassPane = new JPanel(new GridBagLayout()) {
+                @Override
+                protected void paintComponent(Graphics g) {
+                    Graphics2D g2 = (Graphics2D) g.create();
+                    g2.setColor(new Color(0, 0, 0, 160));
+                    g2.fillRect(0, 0, getWidth(), getHeight());
+                    g2.dispose();
+                    super.paintComponent(g);
+                }
+            };
+            confirmGlassPane.setOpaque(false);
+            confirmGlassPane.setVisible(false);
+        }
+
+        confirmGlassPane.removeAll();
+
+        JPanel card = new JPanel();
+        card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
+        card.setBackground(UiTheme.DARK_HEADER_BG);
+        card.setBorder(new EmptyBorder(UiTheme.scale(18), UiTheme.scale(22), UiTheme.scale(18), UiTheme.scale(22)));
+
+        JLabel titleLabel = new JLabel(title);
+        titleLabel.setFont(UiTheme.scaledFont(Font.BOLD, 22));
+        titleLabel.setForeground(new Color(244, 63, 94));
+        titleLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        titleLabel.setHorizontalAlignment(SwingConstants.CENTER);
+        titleLabel.setMaximumSize(new Dimension(Integer.MAX_VALUE, titleLabel.getPreferredSize().height));
+
+        JLabel msgLabel = new JLabel("<html><div style='text-align:center;'>" + message.replace("\n", "<br>")
+                + "</div></html>");
+        msgLabel.setFont(UiTheme.scaledFont(Font.PLAIN, 14));
+        msgLabel.setForeground(UiTheme.DARK_HEADER_FG);
+        msgLabel.setAlignmentX(Component.CENTER_ALIGNMENT);
+        msgLabel.setHorizontalAlignment(SwingConstants.CENTER);
+        msgLabel.setMaximumSize(new Dimension(Integer.MAX_VALUE, msgLabel.getPreferredSize().height));
+
+        JButton yesButton = new JButton("Yes");
+        applyPrimaryButtonStyle(yesButton, UiTheme.scale(16));
+        yesButton.setAlignmentX(Component.CENTER_ALIGNMENT);
+        yesButton.addActionListener(e -> {
+            confirmGlassPane.setVisible(false);
+            setGlassPane(settingsGlassPane);
+            onConfirm.run();
+        });
+
+        JButton noButton = new JButton("No");
+        applyPrimaryButtonStyle(noButton, UiTheme.scale(16));
+        noButton.setAlignmentX(Component.CENTER_ALIGNMENT);
+        noButton.addActionListener(e -> {
+            confirmGlassPane.setVisible(false);
+            setGlassPane(settingsGlassPane);
+            settingsGlassPane.setVisible(true);
+            onCancel.run();
+        });
+
+        Dimension btnSize = UiTheme.scaledDimension(220, 48);
+        yesButton.setPreferredSize(btnSize);
+        yesButton.setMaximumSize(btnSize);
+        noButton.setPreferredSize(btnSize);
+        noButton.setMaximumSize(btnSize);
+
+        card.add(titleLabel);
+        card.add(Box.createVerticalStrut(UiTheme.scale(10)));
+        card.add(msgLabel);
+        card.add(Box.createVerticalStrut(UiTheme.scale(16)));
+        card.add(yesButton);
+        card.add(Box.createVerticalStrut(UiTheme.scale(10)));
+        card.add(noButton);
+
+        confirmGlassPane.add(card, new GridBagConstraints());
+
+        setGlassPane(confirmGlassPane);
+        confirmGlassPane.setVisible(true);
+        confirmGlassPane.revalidate();
+        confirmGlassPane.repaint();
+    }
+
+    private void toggleSettingsOverlay() {
+        if (!gameActive)
+            return;
+        if (settingsGlassPane == null)
+            return;
+        if (settingsGlassPane.isVisible()) {
+            hideSettingsOverlay();
+        } else {
+            showSettingsOverlay();
+        }
+    }
+
+    private void showSettingsOverlay() {
+        setGamePaused(true);
+        settingsGlassPane.setVisible(true);
+        settingsGlassPane.requestFocusInWindow();
+    }
+
+    private void hideSettingsOverlay() {
+        if (settingsGlassPane != null) {
+            settingsGlassPane.setVisible(false);
+        }
+        setGamePaused(false);
+    }
+
+    private void setGamePaused(boolean paused) {
+        if (paused == gamePaused)
+            return;
+        gamePaused = paused;
+
+        if (paused) {
+            pauseStartMs = System.currentTimeMillis();
+            if (runTimer != null) {
+                runTimer.stop();
+            }
+        } else {
+            if (pauseStartMs != 0L && runStartMs != 0L) {
+                long pausedFor = System.currentTimeMillis() - pauseStartMs;
+                runStartMs += pausedFor;
+            }
+            pauseStartMs = 0L;
+            if (runTimer != null && gameActive) {
+                runTimer.start();
+            }
+            updateTimerLabel();
+        }
     }
 
     private void applyPrimaryButtonStyle(JButton button, int fontSize) {
@@ -1125,7 +1721,9 @@ class JavaMinesweeper extends JFrame {
         }
         runTimer = new Timer(250, e -> updateTimerLabel());
         runTimer.setRepeats(true);
-        runTimer.start();
+        if (!gamePaused) {
+            runTimer.start();
+        }
         updateTimerLabel();
     }
 
@@ -1181,6 +1779,8 @@ class JavaMinesweeper extends JFrame {
                 button.addMouseListener(new MouseAdapter() {
                     @Override
                     public void mousePressed(MouseEvent e) {
+                        if (gamePaused)
+                            return;
                         if (SwingUtilities.isRightMouseButton(e)) {
                             if (!gameActive || !button.isEnabled())
                                 return;
@@ -1194,6 +1794,8 @@ class JavaMinesweeper extends JFrame {
 
                     @Override
                     public void mouseReleased(MouseEvent e) {
+                        if (gamePaused)
+                            return;
                         if (!button.isEnabled() || revealed[r][c])
                             return;
                         applyCellTheme(r, c);
@@ -1201,6 +1803,8 @@ class JavaMinesweeper extends JFrame {
 
                     @Override
                     public void mouseEntered(MouseEvent e) {
+                        if (gamePaused)
+                            return;
                         if (!button.isEnabled() || revealed[r][c] || flagged[r][c])
                             return;
                         button.setBackground(new Color(59, 130, 246));
@@ -1208,6 +1812,8 @@ class JavaMinesweeper extends JFrame {
 
                     @Override
                     public void mouseExited(MouseEvent e) {
+                        if (gamePaused)
+                            return;
                         if (!button.isEnabled() || revealed[r][c])
                             return;
                         applyCellTheme(r, c);
@@ -1291,6 +1897,8 @@ class JavaMinesweeper extends JFrame {
 
     private void revealCell(int row, int col) {
         if (!gameActive)
+            return;
+        if (gamePaused)
             return;
         if (revealed[row][col] || flagged[row][col])
             return;
@@ -1526,15 +2134,19 @@ class JavaMinesweeper extends JFrame {
 
             // Check if this qualifies as a highscore
             DatabaseManager dbManager = DatabaseManager.getInstance();
-            boolean qualifies = dbManager.isHighscore(currentDifficulty, timeSeconds, 10);
+            String boardMode = (boardShape == null) ? "SQUARE" : boardShape.name();
+            boolean qualifies = dbManager.isHighscore(currentDifficulty, boardMode, maxLives, timeSeconds, 10);
             System.out.println("DEBUG: Highscore qualification: " + qualifies);
 
             if (qualifies) {
-                String playerName = getPlayerName();
-                System.out.println("DEBUG: Player name entered: '" + playerName + "'");
-                if (playerName != null && !playerName.trim().isEmpty()) {
-                    Highscore highscore = new Highscore(playerName.trim(), currentDifficulty, timeSeconds);
-                    boolean saved = dbManager.saveHighscore(highscore);
+                if (guestMode || currentUserId == null) {
+                    message = "You Win!\nTime: " + formatDuration(elapsed);
+                } else {
+                    String playerName = (currentUsername == null || currentUsername.isBlank()) ? "Player"
+                            : currentUsername;
+                    Highscore highscore = new Highscore(playerName, currentDifficulty, boardMode, maxLives,
+                            timeSeconds);
+                    boolean saved = dbManager.saveHighscore(currentUserId, highscore);
                     System.out.println("DEBUG: Highscore saved: " + saved);
 
                     // Refresh the highscores panel to show the new highscore immediately
@@ -1544,8 +2156,6 @@ class JavaMinesweeper extends JFrame {
 
                     message = "Congratulations! New Highscore!\nPlayer: " + playerName + "\nTime: "
                             + formatDuration(elapsed);
-                } else {
-                    message = "You Win!\nTime: " + formatDuration(elapsed);
                 }
             } else {
                 message = "You Win!\nTime: " + formatDuration(elapsed);
@@ -1559,13 +2169,21 @@ class JavaMinesweeper extends JFrame {
             AnimationManager.showConfetti(this, 120, 5000);
         }
 
-        JOptionPane.showMessageDialog(this, message);
+        showEndGameOverlay(win, message);
 
         for (int r = 0; r < size; r++) {
             for (int c = 0; c < size; c++) {
                 JButton b = buttons[r][c];
                 if (b == null)
                     continue;
+
+                // Remove correctly placed flags (flags on mines) to prevent display issues on
+                // resize
+                if (flagged[r][c] && mines[r][c]) {
+                    flagged[r][c] = false;
+                    b.setIcon(null);
+                    b.setDisabledIcon(null);
+                }
 
                 if (flagged[r][c] && b.getIcon() != null) {
                     b.setDisabledIcon(b.getIcon());
@@ -1584,8 +2202,11 @@ class JavaMinesweeper extends JFrame {
                 b.setEnabled(false);
 
                 if (mines[r][c]) {
-                    b.setOpaque(true);
-                    b.setContentAreaFilled(true);
+                    // Only set opaque/contentAreaFilled for square buttons, not hex buttons
+                    if (!(b instanceof HexButton)) {
+                        b.setOpaque(true);
+                        b.setContentAreaFilled(true);
+                    }
                     if (r == lastExplodedRow && c == lastExplodedCol) {
                         b.setBackground(new Color(251, 146, 60));
                     } else {
@@ -1775,6 +2396,8 @@ class JavaMinesweeper extends JFrame {
 
     private void toggleFlag(int row, int col) {
         if (!gameActive)
+            return;
+        if (gamePaused)
             return;
         JButton b = buttons[row][col];
         if (!b.isEnabled())

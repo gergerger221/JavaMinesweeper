@@ -1,18 +1,39 @@
 package database;
 
-import java.io.*;
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Base64;
 import java.util.List;
 
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
+
 public class DatabaseManager {
-    private static final String DB_NAME = "minesweeper_highscores.txt";
-    private static final String DB_PATH = System.getProperty("user.home") + File.separator + DB_NAME;
-    
     private static DatabaseManager instance;
-    private int nextId = 1;
-    
+
+    private static final String APP_DIR = System.getProperty("user.home") + File.separator + ".javaminesweeper";
+    private static final String DB_PATH = APP_DIR + File.separator + "minesweeper.db";
+    private static final String JDBC_URL = "jdbc:sqlite:" + DB_PATH;
+    private static final String SQLITE_DRIVER_CLASS = "org.sqlite.JDBC";
+
+    private static final int PBKDF2_ITERATIONS = 120_000;
+    private static final int SALT_BYTES = 16;
+    private static final int HASH_BYTES = 32;
+    private final SecureRandom secureRandom = new SecureRandom();
+
+    private volatile String lastErrorMessage;
+
+    private volatile boolean driverChecked;
+
     private DatabaseManager() {
         initializeDatabase();
     }
@@ -25,178 +46,314 @@ public class DatabaseManager {
     }
 
     private void initializeDatabase() {
-        File dbFile = new File(DB_PATH);
-        if (!dbFile.exists()) {
-            try {
-                dbFile.createNewFile();
-                System.out.println("Database file created at: " + DB_PATH);
-            } catch (IOException e) {
-                System.err.println("Error creating database file: " + e.getMessage());
-                e.printStackTrace();
+        File dir = new File(APP_DIR);
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+
+        // Ensure the sqlite-jdbc driver is loaded, otherwise DriverManager may not find
+        // it in some IDE setups.
+        ensureDriverLoaded();
+
+        try (Connection conn = getConnection()) {
+            try (Statement st = conn.createStatement()) {
+                st.execute("PRAGMA foreign_keys = ON");
+
+                st.execute("CREATE TABLE IF NOT EXISTS users (" +
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+                        "username TEXT NOT NULL UNIQUE," +
+                        "password_salt TEXT NOT NULL," +
+                        "password_hash TEXT NOT NULL," +
+                        "created_at TEXT NOT NULL" +
+                        ")");
+
+                st.execute("CREATE TABLE IF NOT EXISTS highscores (" +
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+                        "user_id INTEGER NULL," +
+                        "player_name TEXT NOT NULL," +
+                        "difficulty TEXT NOT NULL," +
+                        "board_mode TEXT NOT NULL," +
+                        "lives INTEGER NOT NULL," +
+                        "time_seconds INTEGER NOT NULL," +
+                        "created_at TEXT NOT NULL," +
+                        "FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL" +
+                        ")");
+
+                st.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_highscores_filters ON highscores(difficulty, board_mode, lives, time_seconds)");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_highscores_created_at ON highscores(created_at)");
             }
-        } else {
-            System.out.println("Database file found at: " + DB_PATH);
-            // Find the next available ID
-            List<Highscore> existing = getAllHighscores();
-            for (Highscore hs : existing) {
-                if (hs.getId() >= nextId) {
-                    nextId = hs.getId() + 1;
-                }
-            }
+        } catch (SQLException e) {
+            System.err.println("Error initializing SQLite database: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
-    public boolean saveHighscore(Highscore highscore) {
+    private Connection getConnection() throws SQLException {
+        ensureDriverLoaded();
+        return DriverManager.getConnection(JDBC_URL);
+    }
+
+    private synchronized void ensureDriverLoaded() {
+        if (driverChecked) {
+            return;
+        }
+        driverChecked = true;
         try {
-            List<Highscore> highscores = getAllHighscores();
-            highscore.setId(nextId++);
-            highscores.add(highscore);
-            
-            // Sort by time (ascending - lower time is better)
-            Collections.sort(highscores);
-            
-            // Keep only top 50 per difficulty to prevent file from growing too large
-            List<Highscore> filteredHighscores = new ArrayList<>();
-            for (String difficulty : new String[]{"Easy", "Medium", "Hard"}) {
-                int count = 0;
-                for (Highscore hs : highscores) {
-                    if (hs.getDifficulty().equals(difficulty) && count < 50) {
-                        filteredHighscores.add(hs);
-                        count++;
+            Class.forName(SQLITE_DRIVER_CLASS);
+        } catch (ClassNotFoundException e) {
+            lastErrorMessage = "SQLite driver not found. Make sure sqlite-jdbc.jar is on the classpath.";
+        } catch (Exception e) {
+            lastErrorMessage = e.getMessage();
+        }
+    }
+
+    public String getLastErrorMessage() {
+        return lastErrorMessage;
+    }
+
+    public synchronized void resetDatabase() {
+        lastErrorMessage = null;
+        try (Connection conn = getConnection()) {
+            try (Statement st = conn.createStatement()) {
+                st.execute("PRAGMA foreign_keys = ON");
+                st.execute("DELETE FROM highscores");
+                st.execute("DELETE FROM users");
+            }
+        } catch (SQLException e) {
+            lastErrorMessage = e.getMessage();
+            System.err.println("Error resetting database: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    public synchronized boolean createUser(String username, String password) {
+        lastErrorMessage = null;
+        if (username == null || username.isBlank() || password == null || password.isBlank()) {
+            return false;
+        }
+
+        try (Connection conn = getConnection()) {
+            byte[] salt = new byte[SALT_BYTES];
+            secureRandom.nextBytes(salt);
+
+            String saltB64 = Base64.getEncoder().encodeToString(salt);
+            String hashB64 = hashPassword(password, saltB64);
+            if (hashB64 == null) {
+                return false;
+            }
+
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "INSERT INTO users(username, password_salt, password_hash, created_at) VALUES(?,?,?,?)")) {
+                ps.setString(1, username.trim());
+                ps.setString(2, saltB64);
+                ps.setString(3, hashB64);
+                ps.setString(4, LocalDateTime.now().toString());
+                ps.executeUpdate();
+                return true;
+            }
+        } catch (SQLException e) {
+            lastErrorMessage = e.getMessage();
+            System.err.println("Error creating user: " + e.getMessage());
+            e.printStackTrace();
+            return false;
+        }
+    }
+
+    public synchronized Integer authenticateUser(String username, String password) {
+        lastErrorMessage = null;
+        if (username == null || username.isBlank() || password == null || password.isBlank()) {
+            return null;
+        }
+
+        try (Connection conn = getConnection()) {
+            try (PreparedStatement ps = conn
+                    .prepareStatement("SELECT id, password_salt, password_hash FROM users WHERE username = ?")) {
+                ps.setString(1, username.trim());
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) {
+                        return null;
                     }
+                    int id = rs.getInt("id");
+                    String salt = rs.getString("password_salt");
+                    String expected = rs.getString("password_hash");
+                    String actual = hashPassword(password, salt);
+                    if (actual == null) {
+                        return null;
+                    }
+                    if (constantTimeEquals(expected, actual)) {
+                        return Integer.valueOf(id);
+                    }
+                    return null;
                 }
             }
-            
-            return saveHighscoresToFile(filteredHighscores);
-            
-        } catch (Exception e) {
+        } catch (SQLException e) {
+            lastErrorMessage = e.getMessage();
+            System.err.println("Error authenticating user: " + e.getMessage());
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    public synchronized String getUsernameById(int userId) {
+        lastErrorMessage = null;
+        try (Connection conn = getConnection()) {
+            try (PreparedStatement ps = conn.prepareStatement("SELECT username FROM users WHERE id = ?")) {
+                ps.setInt(1, userId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) {
+                        return null;
+                    }
+                    return rs.getString("username");
+                }
+            }
+        } catch (SQLException e) {
+            lastErrorMessage = e.getMessage();
+            System.err.println("Error retrieving username: " + e.getMessage());
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    public synchronized boolean saveHighscore(Integer userId, Highscore highscore) {
+        lastErrorMessage = null;
+        if (highscore == null) {
+            return false;
+        }
+
+        try (Connection conn = getConnection()) {
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "INSERT INTO highscores(user_id, player_name, difficulty, board_mode, lives, time_seconds, created_at) VALUES(?,?,?,?,?,?,?)")) {
+                if (userId == null) {
+                    ps.setObject(1, null);
+                } else {
+                    ps.setInt(1, userId.intValue());
+                }
+                ps.setString(2, highscore.getPlayerName());
+                ps.setString(3, highscore.getDifficulty());
+                ps.setString(4, highscore.getBoardMode());
+                ps.setInt(5, highscore.getLives());
+                ps.setLong(6, highscore.getTimeSeconds());
+                ps.setString(7,
+                        (highscore.getTimestamp() == null ? LocalDateTime.now() : highscore.getTimestamp()).toString());
+                ps.executeUpdate();
+                return true;
+            }
+        } catch (SQLException e) {
+            lastErrorMessage = e.getMessage();
             System.err.println("Error saving highscore: " + e.getMessage());
             e.printStackTrace();
             return false;
         }
     }
 
-    public List<Highscore> getTopHighscores(String difficulty, int limit) {
-        try {
-            List<Highscore> allHighscores = getAllHighscores();
-            List<Highscore> filteredHighscores = new ArrayList<>();
-            
-            for (Highscore hs : allHighscores) {
-                if (hs.getDifficulty().equals(difficulty)) {
-                    filteredHighscores.add(hs);
+    public enum SortOrder {
+        TIME_ASC, TIME_DESC, DATE_DESC
+    }
+
+    public synchronized List<Highscore> getHighscores(String difficulty, String boardMode, Integer lives, int limit,
+            SortOrder sort) {
+        lastErrorMessage = null;
+        List<Highscore> result = new ArrayList<>();
+        StringBuilder sql = new StringBuilder(
+                "SELECT id, player_name, difficulty, board_mode, lives, time_seconds, created_at FROM highscores WHERE 1=1");
+        List<Object> params = new ArrayList<>();
+
+        if (difficulty != null && !difficulty.isBlank() && !"All".equalsIgnoreCase(difficulty)) {
+            sql.append(" AND difficulty = ?");
+            params.add(difficulty);
+        }
+        if (boardMode != null && !boardMode.isBlank() && !"All".equalsIgnoreCase(boardMode)) {
+            sql.append(" AND board_mode = ?");
+            params.add(boardMode);
+        }
+        if (lives != null && lives.intValue() > 0) {
+            sql.append(" AND lives = ?");
+            params.add(lives);
+        }
+
+        if (sort == null) {
+            sort = SortOrder.TIME_ASC;
+        }
+        if (sort == SortOrder.TIME_DESC) {
+            sql.append(" ORDER BY time_seconds DESC, created_at DESC");
+        } else if (sort == SortOrder.DATE_DESC) {
+            sql.append(" ORDER BY created_at DESC, time_seconds ASC");
+        } else {
+            sql.append(" ORDER BY time_seconds ASC, created_at DESC");
+        }
+        sql.append(" LIMIT ?");
+        params.add(Integer.valueOf(Math.max(1, limit)));
+
+        try (Connection conn = getConnection()) {
+            try (PreparedStatement ps = conn.prepareStatement(sql.toString())) {
+                for (int i = 0; i < params.size(); i++) {
+                    Object p = params.get(i);
+                    if (p instanceof Integer) {
+                        ps.setInt(i + 1, ((Integer) p).intValue());
+                    } else {
+                        ps.setString(i + 1, String.valueOf(p));
+                    }
+                }
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        Highscore hs = new Highscore(
+                                rs.getInt("id"),
+                                rs.getString("player_name"),
+                                rs.getString("difficulty"),
+                                rs.getString("board_mode"),
+                                rs.getInt("lives"),
+                                rs.getLong("time_seconds"),
+                                LocalDateTime.parse(rs.getString("created_at")));
+                        result.add(hs);
+                    }
                 }
             }
-            
-            // Sort by time (ascending - lower time is better)
-            Collections.sort(filteredHighscores);
-            
-            // Return only the requested number of highscores
-            List<Highscore> result = new ArrayList<>();
-            for (int i = 0; i < Math.min(limit, filteredHighscores.size()); i++) {
-                result.add(filteredHighscores.get(i));
-            }
-            
-            return result;
-            
-        } catch (Exception e) {
+        } catch (SQLException e) {
+            lastErrorMessage = e.getMessage();
             System.err.println("Error retrieving highscores: " + e.getMessage());
             e.printStackTrace();
-            return new ArrayList<>();
         }
+        return result;
     }
 
-    public boolean isHighscore(String difficulty, long timeSeconds, int maxEntries) {
-        System.out.println("DEBUG: isHighscore called - difficulty: '" + difficulty + "', time: " + timeSeconds + ", maxEntries: " + maxEntries);
-        List<Highscore> currentHighscores = getTopHighscores(difficulty, maxEntries);
-        System.out.println("DEBUG: Current highscores count: " + currentHighscores.size());
-        
-        // If we have fewer than max entries, any time qualifies
-        if (currentHighscores.size() < maxEntries) {
-            System.out.println("DEBUG: Qualifies - fewer than max entries");
+    public synchronized boolean isHighscore(String difficulty, String boardMode, int lives, long timeSeconds,
+            int maxEntries) {
+        List<Highscore> current = getHighscores(difficulty, boardMode, Integer.valueOf(lives), maxEntries,
+                SortOrder.TIME_ASC);
+        if (current.size() < maxEntries) {
             return true;
         }
-        
-        // Check if time is better than worst time in current list
-        Highscore worstHighscore = currentHighscores.get(currentHighscores.size() - 1);
-        boolean qualifies = timeSeconds < worstHighscore.getTimeSeconds();
-        System.out.println("DEBUG: Worst time: " + worstHighscore.getTimeSeconds() + ", Current time: " + timeSeconds + ", Qualifies: " + qualifies);
-        return qualifies;
+        Highscore worst = current.get(current.size() - 1);
+        return timeSeconds < worst.getTimeSeconds();
     }
 
-    private List<Highscore> getAllHighscores() {
-        List<Highscore> highscores = new ArrayList<>();
-        File dbFile = new File(DB_PATH);
-        
-        if (!dbFile.exists()) {
-            return highscores;
+    private String hashPassword(String password, String saltB64) {
+        try {
+            byte[] salt = Base64.getDecoder().decode(saltB64);
+            PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), salt, PBKDF2_ITERATIONS, HASH_BYTES * 8);
+            SecretKeyFactory skf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+            byte[] hash = skf.generateSecret(spec).getEncoded();
+            return Base64.getEncoder().encodeToString(hash);
+        } catch (Exception e) {
+            System.err.println("Error hashing password: " + e.getMessage());
+            return null;
         }
-        
-        try (BufferedReader reader = new BufferedReader(new FileReader(dbFile))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                line = line.trim();
-                if (line.isEmpty()) continue;
-                
-                try {
-                    String[] parts = line.split("\\|");
-                    if (parts.length >= 5) {
-                        Highscore highscore = new Highscore(
-                            Integer.parseInt(parts[0]),
-                            parts[1],
-                            parts[2],
-                            Long.parseLong(parts[3]),
-                            LocalDateTime.parse(parts[4])
-                        );
-                        highscores.add(highscore);
-                    }
-                } catch (Exception e) {
-                    System.err.println("Error parsing highscore line: " + line + " - " + e.getMessage());
-                }
-            }
-        } catch (IOException e) {
-            System.err.println("Error reading highscores file: " + e.getMessage());
-            e.printStackTrace();
-        }
-        
-        return highscores;
     }
 
-    private boolean saveHighscoresToFile(List<Highscore> highscores) {
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter(DB_PATH))) {
-            for (Highscore hs : highscores) {
-                writer.write(String.format("%d|%s|%s|%d|%s%n",
-                    hs.getId(),
-                    hs.getPlayerName(),
-                    hs.getDifficulty(),
-                    hs.getTimeSeconds(),
-                    hs.getTimestamp().toString()
-                ));
-            }
-            return true;
-        } catch (IOException e) {
-            System.err.println("Error writing highscores file: " + e.getMessage());
-            e.printStackTrace();
+    private boolean constantTimeEquals(String a, String b) {
+        if (a == null || b == null) {
             return false;
         }
-    }
-
-    // For testing purposes
-    public int getHighscoreCount(String difficulty) {
-        List<Highscore> highscores = getTopHighscores(difficulty, 100);
-        return highscores.size();
-    }
-
-    public void clearAllHighscores() {
-        try {
-            File dbFile = new File(DB_PATH);
-            if (dbFile.exists()) {
-                dbFile.delete();
-                initializeDatabase();
-                System.out.println("All highscores cleared");
-            }
-        } catch (Exception e) {
-            System.err.println("Error clearing highscores: " + e.getMessage());
-            e.printStackTrace();
+        byte[] x = a.getBytes(StandardCharsets.UTF_8);
+        byte[] y = b.getBytes(StandardCharsets.UTF_8);
+        if (x.length != y.length) {
+            return false;
         }
+        int r = 0;
+        for (int i = 0; i < x.length; i++) {
+            r |= x[i] ^ y[i];
+        }
+        return r == 0;
     }
 }

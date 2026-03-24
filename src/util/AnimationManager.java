@@ -292,17 +292,18 @@ public class AnimationManager {
         confettiPanel.setOpaque(false);
         confettiPanel.setBounds(0, 0, initialWidth, initialHeight);
 
-        // Add to glass pane - doesn't interfere with layout
-        Component oldGlassPane = frame.getGlassPane();
-        frame.setGlassPane(confettiPanel);
-        confettiPanel.setVisible(true);
+        // Add to layered pane to avoid conflicts with other glass-pane overlays
+        // (settings/endgame)
+        layeredPane.add(confettiPanel, JLayeredPane.POPUP_LAYER);
+        layeredPane.revalidate();
+        layeredPane.repaint();
 
         // Add component listener to handle resizing
         final ComponentAdapter resizeListener = new ComponentAdapter() {
             @Override
             public void componentResized(ComponentEvent e) {
-                int newWidth = frame.getContentPane().getWidth();
-                int newHeight = frame.getContentPane().getHeight();
+                int newWidth = layeredPane.getWidth();
+                int newHeight = layeredPane.getHeight();
                 confettiPanel.setBounds(0, 0, newWidth, newHeight);
                 confettiPanel.repaint();
             }
@@ -318,8 +319,9 @@ public class AnimationManager {
                 if (currentStep[0] >= steps) {
                     ((Timer) e.getSource()).stop();
                     frame.removeComponentListener(resizeListener);
-                    confettiPanel.setVisible(false);
-                    frame.setGlassPane(oldGlassPane);
+                    layeredPane.remove(confettiPanel);
+                    layeredPane.revalidate();
+                    layeredPane.repaint();
                     return;
                 }
 

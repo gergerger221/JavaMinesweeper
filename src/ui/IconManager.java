@@ -17,6 +17,7 @@ public class IconManager {
     private final BufferedImage starburstImg;
     private final BufferedImage homeImg;
     private final BufferedImage retryImg;
+    private final BufferedImage settingImg;
 
     private final Map<Integer, ImageIcon> flagIconCache = new HashMap<>();
     private final Map<Integer, ImageIcon> mineIconCache = new HashMap<>();
@@ -28,6 +29,7 @@ public class IconManager {
         starburstImg = loadImage("icons/starburst.png");
         homeImg = loadImage("icons/home.png");
         retryImg = loadImage("icons/retry.png");
+        settingImg = loadImage("icons/setting.png");
     }
 
     public ImageIcon getFlagIcon(int size) {
@@ -48,6 +50,10 @@ public class IconManager {
 
     public BufferedImage getRetryImage() {
         return retryImg;
+    }
+
+    public BufferedImage getSettingImage() {
+        return settingImg;
     }
 
     public ImageIcon getStarburstIcon(int size) {

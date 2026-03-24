@@ -7,23 +7,30 @@ public class Highscore implements Comparable<Highscore> {
     private int id;
     private String playerName;
     private String difficulty;
+    private String boardMode;
+    private int lives;
     private long timeSeconds;
     private LocalDateTime timestamp;
 
     public Highscore() {
     }
 
-    public Highscore(String playerName, String difficulty, long timeSeconds) {
+    public Highscore(String playerName, String difficulty, String boardMode, int lives, long timeSeconds) {
         this.playerName = playerName;
         this.difficulty = difficulty;
+        this.boardMode = boardMode;
+        this.lives = lives;
         this.timeSeconds = timeSeconds;
         this.timestamp = LocalDateTime.now();
     }
 
-    public Highscore(int id, String playerName, String difficulty, long timeSeconds, LocalDateTime timestamp) {
+    public Highscore(int id, String playerName, String difficulty, String boardMode, int lives, long timeSeconds,
+            LocalDateTime timestamp) {
         this.id = id;
         this.playerName = playerName;
         this.difficulty = difficulty;
+        this.boardMode = boardMode;
+        this.lives = lives;
         this.timeSeconds = timeSeconds;
         this.timestamp = timestamp;
     }
@@ -51,6 +58,22 @@ public class Highscore implements Comparable<Highscore> {
 
     public void setDifficulty(String difficulty) {
         this.difficulty = difficulty;
+    }
+
+    public String getBoardMode() {
+        return boardMode;
+    }
+
+    public void setBoardMode(String boardMode) {
+        this.boardMode = boardMode;
+    }
+
+    public int getLives() {
+        return lives;
+    }
+
+    public void setLives(int lives) {
+        this.lives = lives;
     }
 
     public long getTimeSeconds() {
@@ -90,7 +113,7 @@ public class Highscore implements Comparable<Highscore> {
 
     @Override
     public String toString() {
-        return String.format("%s - %s - %s - %s", 
-            playerName, difficulty, getFormattedTime(), getFormattedDate());
+        return String.format("%s - %s - %s - %s - %s - %s", playerName, difficulty, boardMode, lives,
+                getFormattedTime(), getFormattedDate());
     }
 }
