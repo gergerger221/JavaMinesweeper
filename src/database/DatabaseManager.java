@@ -89,6 +89,123 @@ public class DatabaseManager {
         }
     }
 
+    public synchronized List<PlayerSlot> getPlayerSlots() {
+        lastErrorMessage = null;
+        List<PlayerSlot> result = new ArrayList<>();
+        try (Connection conn = getConnection()) {
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "SELECT id, username FROM users ORDER BY datetime(created_at) ASC, id ASC")) {
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        result.add(new PlayerSlot(rs.getInt("id"), rs.getString("username")));
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            lastErrorMessage = e.getMessage();
+            System.err.println("Error retrieving player slots: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return result;
+    }
+
+    public synchronized Integer createPlayerSlot(String username) {
+        lastErrorMessage = null;
+        if (username == null || username.isBlank()) {
+            return null;
+        }
+
+        // Internally create a user with a random password (password is never shown to the
+        // player). This keeps the existing schema intact.
+        byte[] pwdBytes = new byte[24];
+        secureRandom.nextBytes(pwdBytes);
+        String randomPassword = Base64.getEncoder().encodeToString(pwdBytes);
+        boolean ok = createUser(username.trim(), randomPassword);
+        if (!ok) {
+            return null;
+        }
+
+        // Fetch id
+        try (Connection conn = getConnection()) {
+            try (PreparedStatement ps = conn.prepareStatement("SELECT id FROM users WHERE username = ?")) {
+                ps.setString(1, username.trim());
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        return Integer.valueOf(rs.getInt("id"));
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            lastErrorMessage = e.getMessage();
+            System.err.println("Error creating player slot: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+    public synchronized boolean renamePlayerSlot(int userId, String newUsername) {
+        lastErrorMessage = null;
+        if (newUsername == null || newUsername.isBlank()) {
+            return false;
+        }
+
+        try (Connection conn = getConnection()) {
+            conn.setAutoCommit(false);
+            try (PreparedStatement ps = conn.prepareStatement("UPDATE users SET username = ? WHERE id = ?")) {
+                ps.setString(1, newUsername.trim());
+                ps.setInt(2, userId);
+                int updated = ps.executeUpdate();
+                if (updated <= 0) {
+                    conn.rollback();
+                    return false;
+                }
+            }
+
+            try (PreparedStatement ps = conn.prepareStatement("UPDATE highscores SET player_name = ? WHERE user_id = ?")) {
+                ps.setString(1, newUsername.trim());
+                ps.setInt(2, userId);
+                ps.executeUpdate();
+            }
+
+            conn.commit();
+            return true;
+        } catch (SQLException e) {
+            lastErrorMessage = e.getMessage();
+            System.err.println("Error renaming player slot: " + e.getMessage());
+            e.printStackTrace();
+            return false;
+        }
+    }
+
+    public synchronized boolean deletePlayerSlot(int userId) {
+        lastErrorMessage = null;
+        try (Connection conn = getConnection()) {
+            conn.setAutoCommit(false);
+
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM highscores WHERE user_id = ?")) {
+                ps.setInt(1, userId);
+                ps.executeUpdate();
+            }
+
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM users WHERE id = ?")) {
+                ps.setInt(1, userId);
+                int updated = ps.executeUpdate();
+                if (updated <= 0) {
+                    conn.rollback();
+                    return false;
+                }
+            }
+
+            conn.commit();
+            return true;
+        } catch (SQLException e) {
+            lastErrorMessage = e.getMessage();
+            System.err.println("Error deleting player slot: " + e.getMessage());
+            e.printStackTrace();
+            return false;
+        }
+    }
+
     private Connection getConnection() throws SQLException {
         ensureDriverLoaded();
         return DriverManager.getConnection(JDBC_URL);
@@ -103,8 +220,8 @@ public class DatabaseManager {
             Class.forName(SQLITE_DRIVER_CLASS);
         } catch (ClassNotFoundException e) {
             lastErrorMessage = "SQLite driver not found. Make sure sqlite-jdbc.jar is on the classpath.";
-        } catch (Exception e) {
-            lastErrorMessage = e.getMessage();
+        } catch (Throwable t) {
+            lastErrorMessage = t.getMessage();
         }
     }
 

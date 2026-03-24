@@ -3,6 +3,7 @@ import javax.swing.border.CompoundBorder;
 import javax.swing.border.EmptyBorder;
 import javax.swing.border.LineBorder;
 import javax.swing.plaf.basic.BasicButtonUI;
+import javax.swing.plaf.basic.BasicScrollBarUI;
 import java.awt.*;
 import java.awt.event.*;
 import java.awt.geom.AffineTransform;
@@ -13,6 +14,7 @@ import java.util.List;
 import java.util.Random;
 import database.DatabaseManager;
 import database.Highscore;
+import database.PlayerSlot;
 import ui.HighscoresPanel;
 import ui.IconManager;
 import util.UiTheme;
@@ -24,8 +26,11 @@ enum BoardShape {
 
 class JavaMinesweeper extends JFrame {
 
+    @SuppressWarnings("unused")
     private static class HexAxial {
+        @SuppressWarnings("unused")
         final int q;
+        @SuppressWarnings("unused")
         final int r;
 
         HexAxial(int q, int r) {
@@ -35,12 +40,14 @@ class JavaMinesweeper extends JFrame {
     }
 
     // even-q vertical layout (flat-top): odd columns are shifted down
+    @SuppressWarnings("unused")
     private HexAxial hexOffsetToAxial(int row, int col) {
         int q = col;
         int r = row - ((col + (col & 1)) / 2);
         return new HexAxial(q, r);
     }
 
+    @SuppressWarnings("unused")
     private Point hexAxialToOffset(int q, int r) {
         int col = q;
         int row = r + ((q + (q & 1)) / 2);
@@ -385,6 +392,7 @@ class JavaMinesweeper extends JFrame {
     private JLabel livesLabel;
     private JButton settingsButton;
     private JPanel settingsGlassPane;
+    private JPanel playerSlotsGlassPane;
     private JPanel endGameGlassPane;
     private JPanel confirmGlassPane;
     private boolean endGameOverlayHidden;
@@ -401,16 +409,19 @@ class JavaMinesweeper extends JFrame {
     private CardLayout cardLayout;
     private JPanel cardPanel;
     private JPanel menuPanel;
+    private JLabel menuUserIndicator;
     private JPanel creditsPanel;
     private JPanel gamePanel;
     private JPanel setupPanel;
-    private JPanel loginPanel;
-    private JPanel createAccountPanel;
+    private JPanel playerSlotsPanel;
     private HighscoresPanel highscoresPanel;
 
     private Integer currentUserId;
     private String currentUsername;
     private boolean guestMode;
+
+    private boolean showCurrentBadgeOnSlots;
+    private Runnable rebuildPlayerSlotsList;
 
     private boolean firstMove;
     private boolean gameActive;
@@ -445,8 +456,7 @@ class JavaMinesweeper extends JFrame {
         buildCreditsUI();
         buildSetupUI();
         buildGameUI();
-        buildLoginUI();
-        buildCreateAccountUI();
+        buildPlayerSlotsUI();
         buildHighscoresUI();
 
         cardPanel.add(menuPanel, "MENU");
@@ -454,213 +464,501 @@ class JavaMinesweeper extends JFrame {
         cardPanel.add(setupPanel, "SETUP");
         cardPanel.add(gamePanel, "GAME");
         cardPanel.add(highscoresPanel, "HIGHSCORES");
-        cardPanel.add(loginPanel, "LOGIN");
-        cardPanel.add(createAccountPanel, "CREATE_ACCOUNT");
+        cardPanel.add(playerSlotsPanel, "PLAYER_SLOTS");
 
         setLocationRelativeTo(null);
-        showLogin();
+        showCurrentBadgeOnSlots = false;
+        showPlayerSlots();
         setExtendedState(JFrame.MAXIMIZED_BOTH);
         setVisible(true);
     }
 
-    private void buildLoginUI() {
-        loginPanel = new MinePatternPanel(new GridBagLayout());
+    private void buildPlayerSlotsUI() {
+        playerSlotsPanel = new MinePatternPanel(new BorderLayout());
 
-        JLabel title = new JLabel("Login");
+        JLabel title = new JLabel("Select Player");
         title.setFont(UiTheme.fontMenuTitle());
         title.setForeground(new Color(15, 23, 42));
+        title.setHorizontalAlignment(SwingConstants.CENTER);
 
-        JTextField usernameField = new JTextField();
-        usernameField.setPreferredSize(UiTheme.scaledDimension(260, 42));
+        JPanel header = new JPanel(new BorderLayout());
+        header.setOpaque(false);
+        header.setBorder(new EmptyBorder(UiTheme.scale(18), UiTheme.scale(18), UiTheme.scale(10), UiTheme.scale(18)));
+        header.add(title, BorderLayout.CENTER);
+        playerSlotsPanel.add(header, BorderLayout.NORTH);
 
-        JPasswordField passwordField = new JPasswordField();
-        passwordField.setPreferredSize(UiTheme.scaledDimension(260, 42));
+        DatabaseManager db = DatabaseManager.getInstance();
 
-        JButton loginBtn = new JButton("Confirm");
-        applyPrimaryButtonStyle(loginBtn, UiTheme.scale(16));
-        loginBtn.addActionListener(e -> {
-            String u = usernameField.getText();
-            String p = new String(passwordField.getPassword());
-            DatabaseManager db = DatabaseManager.getInstance();
-            Integer userId = db.authenticateUser(u, p);
-            if (userId == null) {
-                String err = db.getLastErrorMessage();
-                String msg = (err == null || err.isBlank()) ? "Invalid username or password."
-                        : ("Login failed: " + err);
-                JOptionPane.showMessageDialog(this, msg, "Login Failed", JOptionPane.WARNING_MESSAGE);
-                return;
+        JPanel listPanel = new JPanel();
+        listPanel.setOpaque(false);
+        listPanel.setLayout(new BoxLayout(listPanel, BoxLayout.Y_AXIS));
+        listPanel.setBorder(new EmptyBorder(0, 0, 0, 0));
+
+        JScrollPane scroll = new JScrollPane(listPanel);
+        scroll.setBorder(new EmptyBorder(0, 0, 0, 0));
+        scroll.setOpaque(false);
+        scroll.getViewport().setOpaque(false);
+        scroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        scroll.setBorder(new EmptyBorder(UiTheme.scale(8), UiTheme.scale(60), UiTheme.scale(8), UiTheme.scale(60)));
+        installScrollBarStyle(scroll);
+        scroll.getVerticalScrollBar().setUnitIncrement(UiTheme.scale(28));
+        scroll.getVerticalScrollBar().setBlockIncrement(UiTheme.scale(160));
+        playerSlotsPanel.add(scroll, BorderLayout.CENTER);
+
+        final JPanel slotsGlass = new JPanel(new GridBagLayout()) {
+            @Override
+            protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                try {
+                    g2.setColor(new Color(15, 23, 42, 130));
+                    g2.fillRect(0, 0, getWidth(), getHeight());
+                } finally {
+                    g2.dispose();
+                }
+                super.paintComponent(g);
             }
-            currentUserId = userId;
-            currentUsername = db.getUsernameById(userId.intValue());
-            guestMode = false;
-            showMenu();
+        };
+        slotsGlass.setOpaque(false);
+        slotsGlass.setVisible(false);
+        slotsGlass.setFocusable(true);
+        slotsGlass.setFocusTraversalKeysEnabled(false);
+
+        slotsGlass.addMouseListener(new MouseAdapter() {
+        });
+        slotsGlass.addMouseMotionListener(new MouseMotionAdapter() {
+        });
+        slotsGlass.addMouseWheelListener(e -> {
+            e.consume();
+        });
+        slotsGlass.addKeyListener(new KeyAdapter() {
         });
 
-        JButton guestBtn = new JButton("Play as Guest");
-        applyPrimaryButtonStyle(guestBtn, UiTheme.scale(16));
-        guestBtn.addActionListener(e -> {
-            currentUserId = null;
-            currentUsername = "Guest";
-            guestMode = true;
-            showMenu();
+        playerSlotsGlassPane = slotsGlass;
+
+        final java.util.function.BiConsumer<JPanel, Boolean> showSlotsOverlay = (dialog, visible) -> {
+            if (visible.booleanValue()) {
+                setGlassPane(playerSlotsGlassPane);
+                slotsGlass.removeAll();
+                GridBagConstraints gbc = new GridBagConstraints();
+                gbc.gridx = 0;
+                gbc.gridy = 0;
+                gbc.weightx = 1;
+                gbc.weighty = 1;
+                gbc.anchor = GridBagConstraints.CENTER;
+                slotsGlass.add(dialog, gbc);
+                slotsGlass.revalidate();
+                slotsGlass.repaint();
+                slotsGlass.setVisible(true);
+                slotsGlass.requestFocusInWindow();
+            } else {
+                slotsGlass.setVisible(false);
+                slotsGlass.removeAll();
+                if (settingsGlassPane != null) {
+                    setGlassPane(settingsGlassPane);
+                }
+            }
+        };
+
+        final Runnable[] rebuildListRef = new Runnable[1];
+        rebuildListRef[0] = () -> {
+            listPanel.removeAll();
+            List<PlayerSlot> slots = db.getPlayerSlots();
+
+            if (slots == null || slots.isEmpty()) {
+                JLabel empty = new JLabel("No players yet. Click New to create one.");
+                empty.setFont(UiTheme.scaledFont(Font.PLAIN, 14));
+                empty.setForeground(new Color(71, 85, 105));
+                empty.setAlignmentX(Component.CENTER_ALIGNMENT);
+                listPanel.add(Box.createVerticalStrut(UiTheme.scale(20)));
+                listPanel.add(empty);
+                listPanel.add(Box.createVerticalGlue());
+            } else {
+                for (PlayerSlot slot : slots) {
+                    boolean isCurrent = (showCurrentBadgeOnSlots && currentUserId != null
+                            && currentUserId.intValue() == slot.getId() && !guestMode);
+
+                    JPanel rowOuter = new JPanel(new BorderLayout());
+                    rowOuter.setOpaque(false);
+                    rowOuter.setMaximumSize(new Dimension(Integer.MAX_VALUE, UiTheme.scale(78)));
+
+                    JPanel row = new JPanel(new BorderLayout(UiTheme.scale(12), 0));
+                    row.setOpaque(true);
+                    row.setBackground(new Color(255, 255, 255, 215));
+                    row.setBorder(new CompoundBorder(
+                            new LineBorder(isCurrent ? new Color(99, 102, 241) : new Color(120, 145, 190),
+                                    isCurrent ? 3 : 2, true),
+                            new EmptyBorder(UiTheme.scale(14), UiTheme.scale(16), UiTheme.scale(14), UiTheme.scale(16))
+                    ));
+                    row.setMaximumSize(new Dimension(Integer.MAX_VALUE, UiTheme.scale(72)));
+
+                    JLabel name = new JLabel(slot.getUsername());
+                    name.setFont(UiTheme.scaledFont(Font.BOLD, 16));
+                    name.setForeground(new Color(15, 23, 42));
+                    row.add(name, BorderLayout.WEST);
+
+                    if (isCurrent) {
+                        JLabel currentBadge = new JLabel("Current");
+                        currentBadge.setFont(UiTheme.scaledFont(Font.BOLD, 12));
+                        currentBadge.setForeground(new Color(99, 102, 241));
+                        JPanel badgeWrap = new JPanel(new FlowLayout(FlowLayout.LEFT, UiTheme.scale(10), 0));
+                        badgeWrap.setOpaque(false);
+                        badgeWrap.add(currentBadge);
+                        row.add(badgeWrap, BorderLayout.CENTER);
+                    }
+
+                    JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, UiTheme.scale(8), 0));
+                    actions.setOpaque(false);
+
+                    JButton use = new JButton("Use");
+                    applyPrimaryButtonStyle(use, UiTheme.scale(14));
+                    use.setRolloverEnabled(true);
+                    makeHoverMoreNoticeable(use);
+                    use.addActionListener(e -> {
+                        currentUserId = Integer.valueOf(slot.getId());
+                        currentUsername = slot.getUsername();
+                        guestMode = false;
+                        showMenu();
+                    });
+
+                    JButton rename = new JButton("Rename");
+                    applyPrimaryButtonStyle(rename, UiTheme.scale(14));
+                    rename.setRolloverEnabled(true);
+                    makeHoverMoreNoticeable(rename);
+                    rename.addActionListener(e -> {
+                        JPanel dialog = new JPanel(new BorderLayout(UiTheme.scale(12), UiTheme.scale(12)));
+                        dialog.setBackground(new Color(255, 255, 255, 245));
+                        dialog.setBorder(new CompoundBorder(
+                                new LineBorder(new Color(99, 102, 241), 2, true),
+                                new EmptyBorder(UiTheme.scale(16), UiTheme.scale(18), UiTheme.scale(14),
+                                        UiTheme.scale(18))));
+                        dialog.setPreferredSize(UiTheme.scaledDimension(420, 210));
+
+                        JLabel dlgTitle = new JLabel("Rename Player");
+                        dlgTitle.setFont(UiTheme.scaledFont(Font.BOLD, 18));
+                        dlgTitle.setForeground(new Color(15, 23, 42));
+
+                        JLabel hint = new JLabel("New name:");
+                        hint.setFont(UiTheme.scaledFont(Font.BOLD, 13));
+                        hint.setForeground(new Color(51, 65, 85));
+
+                        JTextField input = new JTextField(slot.getUsername());
+                        input.setFont(UiTheme.scaledFont(Font.PLAIN, 14));
+                        input.setBorder(new CompoundBorder(
+                                new LineBorder(new Color(148, 163, 184), 1, true),
+                                new EmptyBorder(UiTheme.scale(8), UiTheme.scale(10), UiTheme.scale(8),
+                                        UiTheme.scale(10))));
+
+                        JLabel error = new JLabel(" ");
+                        error.setFont(UiTheme.scaledFont(Font.BOLD, 12));
+                        error.setForeground(new Color(220, 38, 38));
+
+                        JPanel body = new JPanel();
+                        body.setOpaque(false);
+                        body.setLayout(new BoxLayout(body, BoxLayout.Y_AXIS));
+                        body.add(hint);
+                        body.add(Box.createVerticalStrut(UiTheme.scale(8)));
+                        body.add(input);
+                        body.add(Box.createVerticalStrut(UiTheme.scale(8)));
+                        body.add(error);
+
+                        JButton cancel = new JButton("Cancel");
+                        applyPrimaryButtonStyle(cancel, UiTheme.scale(14));
+                        cancel.setRolloverEnabled(true);
+                        makeHoverMoreNoticeable(cancel);
+
+                        JButton confirm = new JButton("Rename");
+                        applyPrimaryButtonStyle(confirm, UiTheme.scale(14));
+                        confirm.setRolloverEnabled(true);
+                        makeHoverMoreNoticeable(confirm);
+
+                        cancel.addActionListener(ev -> showSlotsOverlay.accept(dialog, Boolean.FALSE));
+                        confirm.addActionListener(ev -> {
+                            String newName = input.getText();
+                            newName = (newName == null) ? "" : newName.trim();
+                            if (newName.isBlank()) {
+                                error.setText("Player name cannot be empty.");
+                                return;
+                            }
+                            boolean ok = db.renamePlayerSlot(slot.getId(), newName);
+                            if (!ok) {
+                                String err = db.getLastErrorMessage();
+                                String msg;
+                                if (err != null && (err.toLowerCase().contains("unique")
+                                        || err.toLowerCase().contains("constraint")
+                                        || err.toLowerCase().contains("already"))) {
+                                    msg = "That username is already taken.";
+                                } else {
+                                    msg = (err == null || err.isBlank())
+                                            ? "Could not rename player."
+                                            : ("Could not rename player: " + err);
+                                }
+                                error.setText(msg);
+                                return;
+                            }
+                            if (currentUserId != null && currentUserId.intValue() == slot.getId()) {
+                                currentUsername = newName;
+                                guestMode = false;
+                            }
+                            if (highscoresPanel != null) {
+                                highscoresPanel.refreshHighscores();
+                            }
+                            showSlotsOverlay.accept(dialog, Boolean.FALSE);
+                            rebuildListRef[0].run();
+                        });
+
+                        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, UiTheme.scale(10), 0));
+                        buttons.setOpaque(false);
+                        buttons.add(cancel);
+                        buttons.add(confirm);
+
+                        dialog.add(dlgTitle, BorderLayout.NORTH);
+                        dialog.add(body, BorderLayout.CENTER);
+                        dialog.add(buttons, BorderLayout.SOUTH);
+
+                        showSlotsOverlay.accept(dialog, Boolean.TRUE);
+                        SwingUtilities.invokeLater(() -> input.requestFocusInWindow());
+                    });
+
+                    JButton delete = new JButton("Delete");
+                    applyPrimaryButtonStyle(delete, UiTheme.scale(14));
+                    delete.putClientProperty("customHover", Boolean.TRUE);
+                    Color dangerBg = new Color(220, 38, 38);
+                    delete.setBackground(dangerBg);
+                    delete.putClientProperty("baseBg", dangerBg);
+                    delete.setRolloverEnabled(true);
+                    makeHoverMoreNoticeable(delete);
+                    delete.addActionListener(e -> {
+                        JPanel dialog = new JPanel(new BorderLayout(UiTheme.scale(12), UiTheme.scale(12)));
+                        dialog.setBackground(new Color(255, 255, 255, 245));
+                        dialog.setBorder(new CompoundBorder(
+                                new LineBorder(new Color(99, 102, 241), 2, true),
+                                new EmptyBorder(UiTheme.scale(16), UiTheme.scale(18), UiTheme.scale(14),
+                                        UiTheme.scale(18))));
+                        dialog.setPreferredSize(UiTheme.scaledDimension(460, 220));
+
+                        JLabel dlgTitle = new JLabel("Delete Player");
+                        dlgTitle.setFont(UiTheme.scaledFont(Font.BOLD, 18));
+                        dlgTitle.setForeground(new Color(15, 23, 42));
+
+                        JLabel msg1 = new JLabel(
+                                "Delete player '" + slot.getUsername() + "' and ALL their highscores?");
+                        msg1.setFont(UiTheme.scaledFont(Font.BOLD, 13));
+                        msg1.setForeground(new Color(51, 65, 85));
+
+                        JLabel msg2 = new JLabel("This cannot be undone.");
+                        msg2.setFont(UiTheme.scaledFont(Font.PLAIN, 13));
+                        msg2.setForeground(new Color(71, 85, 105));
+
+                        JLabel error = new JLabel(" ");
+                        error.setFont(UiTheme.scaledFont(Font.BOLD, 12));
+                        error.setForeground(new Color(220, 38, 38));
+
+                        JPanel body = new JPanel();
+                        body.setOpaque(false);
+                        body.setLayout(new BoxLayout(body, BoxLayout.Y_AXIS));
+                        body.add(msg1);
+                        body.add(Box.createVerticalStrut(UiTheme.scale(8)));
+                        body.add(msg2);
+                        body.add(Box.createVerticalStrut(UiTheme.scale(10)));
+                        body.add(error);
+
+                        JButton cancel = new JButton("Cancel");
+                        applyPrimaryButtonStyle(cancel, UiTheme.scale(14));
+                        cancel.setRolloverEnabled(true);
+                        makeHoverMoreNoticeable(cancel);
+
+                        JButton confirm = new JButton("Delete");
+                        applyPrimaryButtonStyle(confirm, UiTheme.scale(14));
+                        confirm.putClientProperty("customHover", Boolean.TRUE);
+                        Color dangerBg2 = new Color(220, 38, 38);
+                        confirm.setBackground(dangerBg2);
+                        confirm.putClientProperty("baseBg", dangerBg2);
+                        confirm.setRolloverEnabled(true);
+                        makeHoverMoreNoticeable(confirm);
+
+                        cancel.addActionListener(ev -> showSlotsOverlay.accept(dialog, Boolean.FALSE));
+                        confirm.addActionListener(ev -> {
+                            boolean ok = db.deletePlayerSlot(slot.getId());
+                            if (!ok) {
+                                String err = db.getLastErrorMessage();
+                                String msg = (err == null || err.isBlank()) ? "Could not delete player."
+                                        : ("Could not delete player: " + err);
+                                error.setText(msg);
+                                return;
+                            }
+                            if (currentUserId != null && currentUserId.intValue() == slot.getId()) {
+                                currentUserId = null;
+                                currentUsername = null;
+                                guestMode = true;
+                            }
+                            if (highscoresPanel != null) {
+                                highscoresPanel.refreshHighscores();
+                            }
+                            showSlotsOverlay.accept(dialog, Boolean.FALSE);
+                            rebuildListRef[0].run();
+                        });
+
+                        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, UiTheme.scale(10), 0));
+                        buttons.setOpaque(false);
+                        buttons.add(cancel);
+                        buttons.add(confirm);
+
+                        dialog.add(dlgTitle, BorderLayout.NORTH);
+                        dialog.add(body, BorderLayout.CENTER);
+                        dialog.add(buttons, BorderLayout.SOUTH);
+
+                        showSlotsOverlay.accept(dialog, Boolean.TRUE);
+                    });
+
+                    actions.add(use);
+                    actions.add(rename);
+                    actions.add(delete);
+                    row.add(actions, BorderLayout.EAST);
+
+                    rowOuter.add(row, BorderLayout.CENTER);
+                    listPanel.add(rowOuter);
+                    listPanel.add(Box.createVerticalStrut(UiTheme.scale(2)));
+                }
+            }
+
+            listPanel.revalidate();
+            listPanel.repaint();
+        };
+
+        rebuildListRef[0].run();
+        rebuildPlayerSlotsList = rebuildListRef[0];
+
+        JPanel footer = new JPanel(new BorderLayout());
+        footer.setOpaque(false);
+        footer.setBorder(new EmptyBorder(UiTheme.scale(10), UiTheme.scale(60), UiTheme.scale(18), UiTheme.scale(60)));
+
+        JButton back = new JButton("Back");
+        applyPrimaryButtonStyle(back, UiTheme.scale(16));
+        back.setRolloverEnabled(true);
+        makeHoverMoreNoticeable(back);
+        back.addActionListener(e -> showMenu());
+
+        JButton newBtn = new JButton("New");
+        applyPrimaryButtonStyle(newBtn, UiTheme.scale(16));
+        newBtn.setRolloverEnabled(true);
+        makeHoverMoreNoticeable(newBtn);
+        newBtn.addActionListener(e -> {
+            JPanel dialog = new JPanel(new BorderLayout(UiTheme.scale(12), UiTheme.scale(12)));
+            dialog.setBackground(new Color(255, 255, 255, 245));
+            dialog.setBorder(new CompoundBorder(
+                    new LineBorder(new Color(99, 102, 241), 2, true),
+                    new EmptyBorder(UiTheme.scale(16), UiTheme.scale(18), UiTheme.scale(14), UiTheme.scale(18))));
+            dialog.setPreferredSize(UiTheme.scaledDimension(420, 210));
+
+            JLabel dlgTitle = new JLabel("New Player");
+            dlgTitle.setFont(UiTheme.scaledFont(Font.BOLD, 18));
+            dlgTitle.setForeground(new Color(15, 23, 42));
+
+            JLabel hint = new JLabel("Enter player name:");
+            hint.setFont(UiTheme.scaledFont(Font.BOLD, 13));
+            hint.setForeground(new Color(51, 65, 85));
+
+            JTextField input = new JTextField();
+            input.setFont(UiTheme.scaledFont(Font.PLAIN, 14));
+            input.setBorder(new CompoundBorder(
+                    new LineBorder(new Color(148, 163, 184), 1, true),
+                    new EmptyBorder(UiTheme.scale(8), UiTheme.scale(10), UiTheme.scale(8), UiTheme.scale(10))));
+
+            JLabel error = new JLabel(" ");
+            error.setFont(UiTheme.scaledFont(Font.BOLD, 12));
+            error.setForeground(new Color(220, 38, 38));
+
+            JPanel body = new JPanel();
+            body.setOpaque(false);
+            body.setLayout(new BoxLayout(body, BoxLayout.Y_AXIS));
+            body.add(hint);
+            body.add(Box.createVerticalStrut(UiTheme.scale(8)));
+            body.add(input);
+            body.add(Box.createVerticalStrut(UiTheme.scale(8)));
+            body.add(error);
+
+            JButton cancel = new JButton("Cancel");
+            applyPrimaryButtonStyle(cancel, UiTheme.scale(14));
+            cancel.setRolloverEnabled(true);
+            makeHoverMoreNoticeable(cancel);
+
+            JButton confirm = new JButton("Create");
+            applyPrimaryButtonStyle(confirm, UiTheme.scale(14));
+            confirm.setRolloverEnabled(true);
+            makeHoverMoreNoticeable(confirm);
+
+            cancel.addActionListener(ev -> showSlotsOverlay.accept(dialog, Boolean.FALSE));
+            confirm.addActionListener(ev -> {
+                String name = input.getText();
+                name = (name == null) ? "" : name.trim();
+                if (name.isBlank()) {
+                    error.setText("Player name cannot be empty.");
+                    return;
+                }
+                Integer id = db.createPlayerSlot(name);
+                if (id == null) {
+                    String err = db.getLastErrorMessage();
+                    String msg;
+                    if (err != null && (err.toLowerCase().contains("unique")
+                            || err.toLowerCase().contains("constraint")
+                            || err.toLowerCase().contains("already"))) {
+                        msg = "That username is already taken.";
+                    } else {
+                        msg = (err == null || err.isBlank()) ? "Could not create player."
+                                : ("Could not create player: " + err);
+                    }
+                    error.setText(msg);
+                    return;
+                }
+                showSlotsOverlay.accept(dialog, Boolean.FALSE);
+                rebuildListRef[0].run();
+            });
+
+            JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, UiTheme.scale(10), 0));
+            buttons.setOpaque(false);
+            buttons.add(cancel);
+            buttons.add(confirm);
+
+            dialog.add(dlgTitle, BorderLayout.NORTH);
+            dialog.add(body, BorderLayout.CENTER);
+            dialog.add(buttons, BorderLayout.SOUTH);
+
+            showSlotsOverlay.accept(dialog, Boolean.TRUE);
+            SwingUtilities.invokeLater(() -> input.requestFocusInWindow());
         });
 
-        JLabel createLink = new JLabel("Create account");
-        createLink.setFont(UiTheme.fontCreditsLink());
-        Color linkDefault = new Color(71, 85, 105);
-        Color linkHover = new Color(30, 41, 59);
-        createLink.setForeground(linkDefault);
-        createLink.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        createLink.addMouseListener(new MouseAdapter() {
-            @Override
-            public void mouseClicked(MouseEvent e) {
-                showCreateAccount();
-            }
+        footer.add(back, BorderLayout.WEST);
 
-            @Override
-            public void mouseEntered(MouseEvent e) {
-                createLink.setText("<html><u>Create account</u></html>");
-                createLink.setForeground(linkHover);
-            }
+        JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, UiTheme.scale(10), 0));
+        right.setOpaque(false);
+        right.add(newBtn);
+        footer.add(right, BorderLayout.EAST);
 
-            @Override
-            public void mouseExited(MouseEvent e) {
-                createLink.setText("Create account");
-                createLink.setForeground(linkDefault);
-            }
-        });
-
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.gridx = 0;
-        gbc.gridy = 0;
-        gbc.insets = UiTheme.scaledInsets(0, 0, 18, 0);
-        loginPanel.add(title, gbc);
-
-        gbc.gridy = 1;
-        gbc.insets = UiTheme.scaledInsets(0, 0, 8, 0);
-        loginPanel.add(new JLabel("Username"), gbc);
-
-        gbc.gridy = 2;
-        gbc.insets = UiTheme.scaledInsets(0, 0, 12, 0);
-        loginPanel.add(usernameField, gbc);
-
-        gbc.gridy = 3;
-        gbc.insets = UiTheme.scaledInsets(0, 0, 8, 0);
-        loginPanel.add(new JLabel("Password"), gbc);
-
-        gbc.gridy = 4;
-        gbc.insets = UiTheme.scaledInsets(0, 0, 14, 0);
-        loginPanel.add(passwordField, gbc);
-
-        gbc.gridy = 5;
-        gbc.insets = UiTheme.scaledInsets(0, 0, 10, 0);
-        loginPanel.add(loginBtn, gbc);
-
-        gbc.gridy = 6;
-        gbc.insets = UiTheme.scaledInsets(0, 0, 10, 0);
-        loginPanel.add(guestBtn, gbc);
-
-        gbc.gridy = 7;
-        gbc.insets = UiTheme.scaledInsets(0, 0, 0, 0);
-        loginPanel.add(createLink, gbc);
+        playerSlotsPanel.add(footer, BorderLayout.SOUTH);
     }
 
-    private void buildCreateAccountUI() {
-        createAccountPanel = new MinePatternPanel(new GridBagLayout());
-
-        JLabel title = new JLabel("Create Account");
-        title.setFont(UiTheme.fontMenuTitle());
-        title.setForeground(new Color(15, 23, 42));
-
-        JTextField usernameField = new JTextField();
-        usernameField.setPreferredSize(UiTheme.scaledDimension(260, 42));
-
-        JPasswordField passwordField = new JPasswordField();
-        passwordField.setPreferredSize(UiTheme.scaledDimension(260, 42));
-
-        JPasswordField rePasswordField = new JPasswordField();
-        rePasswordField.setPreferredSize(UiTheme.scaledDimension(260, 42));
-
-        JButton createBtn = new JButton("Confirm");
-        applyPrimaryButtonStyle(createBtn, UiTheme.scale(16));
-        createBtn.addActionListener(e -> {
-            String u = usernameField.getText();
-            String p1 = new String(passwordField.getPassword());
-            String p2 = new String(rePasswordField.getPassword());
-            if (u == null || u.isBlank() || p1.isBlank()) {
-                JOptionPane.showMessageDialog(this, "Please enter a username and password.", "Invalid",
-                        JOptionPane.WARNING_MESSAGE);
-                return;
-            }
-            if (!p1.equals(p2)) {
-                JOptionPane.showMessageDialog(this, "Passwords do not match.", "Invalid",
-                        JOptionPane.WARNING_MESSAGE);
-                return;
-            }
-            DatabaseManager db = DatabaseManager.getInstance();
-            boolean ok = db.createUser(u.trim(), p1);
-            if (!ok) {
-                String err = db.getLastErrorMessage();
-                String msg = (err == null || err.isBlank())
-                        ? "Could not create account. Username may already exist."
-                        : ("Could not create account: " + err);
-                JOptionPane.showMessageDialog(this, msg, "Create Account Failed", JOptionPane.WARNING_MESSAGE);
-                return;
-            }
-            JOptionPane.showMessageDialog(this, "Account created. Please login.", "Success",
-                    JOptionPane.INFORMATION_MESSAGE);
-            showLogin();
-        });
-
-        JButton backBtn = new JButton("Back");
-        applyPrimaryButtonStyle(backBtn, UiTheme.scale(16));
-        backBtn.addActionListener(e -> showLogin());
-
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.gridx = 0;
-        gbc.gridy = 0;
-        gbc.insets = UiTheme.scaledInsets(0, 0, 18, 0);
-        createAccountPanel.add(title, gbc);
-
-        gbc.gridy = 1;
-        gbc.insets = UiTheme.scaledInsets(0, 0, 8, 0);
-        createAccountPanel.add(new JLabel("Username"), gbc);
-
-        gbc.gridy = 2;
-        gbc.insets = UiTheme.scaledInsets(0, 0, 12, 0);
-        createAccountPanel.add(usernameField, gbc);
-
-        gbc.gridy = 3;
-        gbc.insets = UiTheme.scaledInsets(0, 0, 8, 0);
-        createAccountPanel.add(new JLabel("Password"), gbc);
-
-        gbc.gridy = 4;
-        gbc.insets = UiTheme.scaledInsets(0, 0, 12, 0);
-        createAccountPanel.add(passwordField, gbc);
-
-        gbc.gridy = 5;
-        gbc.insets = UiTheme.scaledInsets(0, 0, 8, 0);
-        createAccountPanel.add(new JLabel("Re-enter Password"), gbc);
-
-        gbc.gridy = 6;
-        gbc.insets = UiTheme.scaledInsets(0, 0, 14, 0);
-        createAccountPanel.add(rePasswordField, gbc);
-
-        gbc.gridy = 7;
-        gbc.insets = UiTheme.scaledInsets(0, 0, 10, 0);
-        createAccountPanel.add(createBtn, gbc);
-
-        gbc.gridy = 8;
-        gbc.insets = UiTheme.scaledInsets(0, 0, 0, 0);
-        createAccountPanel.add(backBtn, gbc);
+    private void showPlayerSlots() {
+        if (showCurrentBadgeOnSlots && rebuildPlayerSlotsList != null) {
+            rebuildPlayerSlotsList.run();
+        }
+        cardLayout.show(cardPanel, "PLAYER_SLOTS");
     }
 
-    private void showLogin() {
-        cardLayout.show(cardPanel, "LOGIN");
+    private String getCurrentUserDisplayName() {
+        if (guestMode || currentUserId == null) {
+            return "None";
+        }
+        if (currentUsername == null || currentUsername.isBlank()) {
+            return "Player";
+        }
+        return currentUsername;
     }
 
-    private void showCreateAccount() {
-        cardLayout.show(cardPanel, "CREATE_ACCOUNT");
+    private void updateMenuUserIndicator() {
+        if (menuUserIndicator == null) {
+            return;
+        }
+        menuUserIndicator.setText("Current User: " + getCurrentUserDisplayName());
     }
 
     private void buildMenuUI() {
@@ -669,6 +967,24 @@ class JavaMinesweeper extends JFrame {
         JLabel menuTitle = new JLabel("JavaMinesweeper");
         menuTitle.setFont(UiTheme.fontMenuTitle());
         menuTitle.setForeground(new Color(15, 23, 42));
+
+        menuUserIndicator = new JLabel();
+        menuUserIndicator.setFont(UiTheme.scaledFont(Font.BOLD, 14));
+        menuUserIndicator.setForeground(new Color(30, 41, 59));
+        menuUserIndicator.setOpaque(true);
+        menuUserIndicator.setBackground(new Color(255, 255, 255, 220));
+        menuUserIndicator.setBorder(new CompoundBorder(
+                new LineBorder(new Color(99, 102, 241), 2, true),
+                new EmptyBorder(UiTheme.scale(8), UiTheme.scale(14), UiTheme.scale(8), UiTheme.scale(14))
+        ));
+        updateMenuUserIndicator();
+
+        JButton playerSlotsButton = new JButton("Change User");
+        applyPrimaryButtonStyle(playerSlotsButton, UiTheme.scale(16));
+        playerSlotsButton.addActionListener(e -> {
+            showCurrentBadgeOnSlots = true;
+            showPlayerSlots();
+        });
 
         JButton playButton = new JButton("Play");
         applyPrimaryButtonStyle(playButton, UiTheme.scale(16));
@@ -710,14 +1026,22 @@ class JavaMinesweeper extends JFrame {
         menuPanel.add(menuTitle, gbc);
 
         gbc.gridy = 1;
-        gbc.insets = UiTheme.scaledInsets(0, 0, 10, 0);
-        menuPanel.add(playButton, gbc);
+        gbc.insets = UiTheme.scaledInsets(0, 0, 14, 0);
+        menuPanel.add(menuUserIndicator, gbc);
 
         gbc.gridy = 2;
         gbc.insets = UiTheme.scaledInsets(0, 0, 10, 0);
-        menuPanel.add(highscoresButton, gbc);
+        menuPanel.add(playButton, gbc);
 
         gbc.gridy = 3;
+        gbc.insets = UiTheme.scaledInsets(0, 0, 10, 0);
+        menuPanel.add(playerSlotsButton, gbc);
+
+        gbc.gridy = 4;
+        gbc.insets = UiTheme.scaledInsets(0, 0, 10, 0);
+        menuPanel.add(highscoresButton, gbc);
+
+        gbc.gridy = 5;
         gbc.insets = UiTheme.scaledInsets(0, 0, 0, 0);
         menuPanel.add(creditsLink, gbc);
     }
@@ -750,6 +1074,7 @@ class JavaMinesweeper extends JFrame {
                 boolean isSel = (b == selected);
                 b.putClientProperty("selectedOption", Boolean.valueOf(isSel));
                 b.setBackground(isSel ? selectedBg : normalBg);
+                b.setForeground(isSel ? Color.WHITE : new Color(80, 80, 80));
                 // Update flag visibility
                 JLabel leftFlag = (JLabel) b.getClientProperty("leftFlag");
                 JLabel rightFlag = (JLabel) b.getClientProperty("rightFlag");
@@ -950,7 +1275,7 @@ class JavaMinesweeper extends JFrame {
         title.setFont(UiTheme.fontCreditsTitle());
         title.setForeground(new Color(15, 23, 42));
 
-        JLabel group = new JLabel("Group: JerjerKings");
+        JLabel group = new JLabel("Group: JerJerKings");
         group.setFont(UiTheme.fontCreditsText());
         group.setForeground(new Color(15, 23, 42));
 
@@ -982,6 +1307,7 @@ class JavaMinesweeper extends JFrame {
         creditsPanel.add(backButton, gbc);
     }
 
+    @SuppressWarnings("unused")
     private JPanel createDifficultyRow(String text, Dimension size, ImageIcon flagIcon,
             Color hoverBg, Color normalBg, Runnable action) {
         JButton button = new JButton();
@@ -1473,6 +1799,9 @@ class JavaMinesweeper extends JFrame {
 
     private void showSettingsOverlay() {
         setGamePaused(true);
+        if (settingsGlassPane != null) {
+            setGlassPane(settingsGlassPane);
+        }
         settingsGlassPane.setVisible(true);
         settingsGlassPane.requestFocusInWindow();
     }
@@ -1505,6 +1834,25 @@ class JavaMinesweeper extends JFrame {
             }
             updateTimerLabel();
         }
+    }
+
+    private void makeHoverMoreNoticeable(JButton button) {
+        button.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseEntered(MouseEvent e) {
+                if (!button.isEnabled()) return;
+                button.setBackground(darken(button.getBackground(), 0.20f));
+            }
+
+            @Override
+            public void mouseExited(MouseEvent e) {
+                if (!button.isEnabled()) return;
+                Color baseBg = (Color) button.getClientProperty("baseBg");
+                if (baseBg != null) {
+                    button.setBackground(baseBg);
+                }
+            }
+        });
     }
 
     private void applyPrimaryButtonStyle(JButton button, int fontSize) {
@@ -1613,6 +1961,8 @@ class JavaMinesweeper extends JFrame {
     }
 
     private void showMenu() {
+        showCurrentBadgeOnSlots = false;
+        updateMenuUserIndicator();
         cardLayout.show(cardPanel, "MENU");
     }
 
@@ -1625,9 +1975,73 @@ class JavaMinesweeper extends JFrame {
     }
 
     private void showHighscores() {
+        if (highscoresPanel != null) {
+            highscoresPanel.refreshHighscores();
+        }
         cardLayout.show(cardPanel, "HIGHSCORES");
     }
 
+    private void installScrollBarStyle(JScrollPane scrollPane) {
+        JScrollBar bar = scrollPane.getVerticalScrollBar();
+        bar.setPreferredSize(new Dimension(UiTheme.scale(12), Integer.MAX_VALUE));
+        bar.setUI(new BasicScrollBarUI() {
+            @Override
+            protected void configureScrollBarColors() {
+                this.thumbColor = new Color(99, 102, 241, 200);
+                this.trackColor = new Color(226, 232, 240, 140);
+                this.trackHighlightColor = new Color(226, 232, 240, 160);
+            }
+
+            @Override
+            protected JButton createDecreaseButton(int orientation) {
+                return createZeroButton();
+            }
+
+            @Override
+            protected JButton createIncreaseButton(int orientation) {
+                return createZeroButton();
+            }
+
+            private JButton createZeroButton() {
+                JButton b = new JButton();
+                b.setPreferredSize(new Dimension(0, 0));
+                b.setMinimumSize(new Dimension(0, 0));
+                b.setMaximumSize(new Dimension(0, 0));
+                return b;
+            }
+
+            @Override
+            protected void paintThumb(Graphics g, JComponent c, Rectangle thumbBounds) {
+                if (thumbBounds.isEmpty() || !scrollbar.isEnabled()) {
+                    return;
+                }
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setColor(thumbColor);
+                int arc = UiTheme.scale(10);
+                int inset = UiTheme.scale(2);
+                g2.fillRoundRect(thumbBounds.x + inset, thumbBounds.y + inset,
+                        thumbBounds.width - (inset * 2), thumbBounds.height - (inset * 2), arc, arc);
+                g2.dispose();
+            }
+
+            @Override
+            protected void paintTrack(Graphics g, JComponent c, Rectangle trackBounds) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setColor(trackColor);
+                int arc = UiTheme.scale(10);
+                int inset = UiTheme.scale(2);
+                g2.fillRoundRect(trackBounds.x + inset, trackBounds.y + inset,
+                        trackBounds.width - (inset * 2), trackBounds.height - (inset * 2), arc, arc);
+                g2.dispose();
+            }
+        });
+        bar.setOpaque(false);
+        scrollPane.setOpaque(false);
+    }
+
+    @SuppressWarnings("unused")
     private String getPlayerName() {
         String playerName = JOptionPane.showInputDialog(
                 this,
@@ -1868,6 +2282,7 @@ class JavaMinesweeper extends JFrame {
         return count;
     }
 
+    @SuppressWarnings("unused")
     private int countMinesTri(int row, int col) {
         int count = 0;
         boolean pointsUp = ((row + col) % 2 == 0);
